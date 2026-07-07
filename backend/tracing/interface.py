@@ -113,13 +113,24 @@ class NoOpTracer:
 
 
 _NOOP_TRACER = NoOpTracer()
+_current_tracer: Tracer = _NOOP_TRACER
+
+
+def set_tracer(tracer: Tracer) -> None:
+    """Register the active tracer.
+
+    ``tracing-foundation`` (P3) calls this at startup to swap in the DeepEval-backed
+    implementation; foundations ships the no-op tracer as the default. This is the single
+    registration point, so downstream code never imports ``deepeval`` or edits this module.
+    """
+    global _current_tracer
+    _current_tracer = tracer
 
 
 def get_tracer() -> Tracer:
-    """Return the active tracer.
+    """Return the active tracer (the no-op tracer until ``set_tracer`` registers another).
 
-    Foundations ships the no-op tracer; ``tracing-foundation`` replaces the selection
-    here (or via configuration) with the DeepEval-backed implementation. Importers call
-    ``get_tracer()`` once and use the returned object, so the impl choice lives in one place.
+    Importers call ``get_tracer()`` and use the returned object, so the impl choice lives
+    in one place.
     """
-    return _NOOP_TRACER
+    return _current_tracer
