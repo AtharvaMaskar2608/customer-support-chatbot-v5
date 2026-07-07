@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     confident_api_key: str | None = Field(None, alias="CONFIDENT_API_KEY")
     tracing_enabled: bool = Field(False, alias="TRACING_ENABLED")
 
+    # --- CORS (POC frontend origins; comma-separated, "*" allows any) ---
+    cors_origins: str = Field("*", alias="CORS_ORIGINS")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Parse ``cors_origins`` into a list of allowed origins ("*" -> ["*"])."""
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:
