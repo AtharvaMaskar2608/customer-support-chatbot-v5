@@ -1,0 +1,26 @@
+[
+  {
+    "input": "What specific documents are necessary to establish a HUF Mutual Fund account?",
+    "expected_output": "To establish a HUF Mutual Fund account, you need the following documents: Photograph of Karta, HUF PAN Card, HUF Address Proof (Bank Statement), Karta Details Sheet, Karta PAN Card, Karta Address Proof, List of Coparceners, FATCA Form, Cancelled Cheque, Account Opening Form, and Signature Proof on White Paper.",
+    "context": [
+      "Mutual Fund\nQ: How can I open a HUF Mutual Fund account?\nA: Please provide the following documents:\n • Photograph of Karta\n • HUF PAN Card\n • HUF Address Proof (Bank Statement)\n • Karta Details Sheet\n • Karta PAN Card\n • Karta Address Proof\n • List of Coparceners\n • FATCA Form\n • Cancelled Cheque\n • Account Opening Form\n • Signature Proof on White Paper"
+    ],
+    "source_chunk_id": 1
+  },
+  {
+    "input": "What are the prerequisites for establishing a custodial investment account for minors?",
+    "expected_output": "To establish a custodial investment account for minors, you need to provide the following: Guardian Photograph, Guardian PAN Card, Guardian Address Proof, Minor's Cancelled Cheque, Account Opening Form, Guardian Signature on White Paper, and Minor's Birth Certificate.",
+    "context": [
+      "Mutual Fund\nQ: How can I open a Minor Mutual Fund account?\nA: Please provide:\n • Guardian Photograph\n • Guardian PAN Card\n • Guardian Address Proof\n • Minor's Cancelled Cheque\n • Account Opening Form\n • Guardian Signature on White Paper\n • Minor's Birth Certificate"
+    ],
+    "source_chunk_id": 2
+  },
+  {
+    "input": "Why are specific bank details required for NEFT/RTGS payments to Indian Clearing Corporation Ltd - MFD A/c?",
+    "expected_output": "Specific bank details are required for NEFT/RTGS payments to ensure that the funds are accurately and securely transferred to the correct beneficiary account, in this case, the Indian Clearing Corporation Ltd - MFD A/c. This includes details like the beneficiary name, account number, IFSC code, and account type, which help in identifying and processing the transaction efficiently.",
+    "context": [
+      "Mutual Fund\nQ: What are the bank details for NEFT/RTGS Mutual Fund payments?\nA: Beneficiary Name: Indian Clearing Corporation Ltd - MFD A/c\n Account Number: MFDICC\n IFSC Code: HDFC0000240\n Account Type: Current"
+    ],
+    "source_chunk_id": 3
+  }
+]

@@ -222,3 +222,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# DeepEval run cache / telemetry (local run output; goldens.json + report.md are committed)
+.deepeval/
