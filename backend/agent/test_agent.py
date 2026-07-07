@@ -18,9 +18,11 @@ from backend.agent import cost, loop, prompt
 from backend.agent.loop import (
     agent_reply,
     agent_reply_stream,
+    clarifying_question_count,
     conversation_message_count,
     resume_report_stream,
 )
+from backend.agent.tools import ASK_CLARIFYING_QUESTION, available_tools
 from backend.config.settings import get_settings
 from backend.contracts.models import Citation, RagChunk, RagResult, ReportResult, Session
 
@@ -109,8 +111,10 @@ class _FakeAsyncMessages:
     def __init__(self, script: list[dict[str, Any]]):
         self._script = script
         self._i = 0
+        self.tools_seen: list[Any] = []  # the `tools` kwarg passed on each call
 
     def stream(self, **kwargs: Any) -> _FakeStream:
+        self.tools_seen.append(kwargs.get("tools"))
         turn = self._script[self._i]
         self._i += 1
         return _FakeStream(turn["events"], turn["final"])
@@ -125,8 +129,10 @@ class _FakeSyncMessages:
     def __init__(self, script: list[Any]):
         self._script = script
         self._i = 0
+        self.tools_seen: list[Any] = []  # the `tools` kwarg passed on each call
 
     def create(self, **kwargs: Any):
+        self.tools_seen.append(kwargs.get("tools"))
         message = self._script[self._i]
         self._i += 1
         return message
@@ -319,6 +325,87 @@ def test_unknown_model_falls_back_to_sonnet_tier(monkeypatch):
 # --------------------------------------------------------------------------------------
 # System prompt: guardrails + tools + in-scope categories
 # --------------------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------------------
+# Clarifying-question cap (code-enforced) + session identity
+# --------------------------------------------------------------------------------------
+
+
+def _clarify_tool_use(id: str = "cq") -> dict[str, Any]:
+    return {"type": "tool_use", "id": id, "name": ASK_CLARIFYING_QUESTION, "input": {}}
+
+
+def _two_clarifying_asked() -> list[dict[str, Any]]:
+    return [
+        {"role": "user", "content": "help"},
+        {"role": "assistant", "content": [_clarify_tool_use("c1")]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "ask"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Which product?"}]},
+        {"role": "user", "content": "the app"},
+        {"role": "assistant", "content": [_clarify_tool_use("c2")]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c2", "content": "ask"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Which screen?"}]},
+    ]
+
+
+def test_clarifying_question_count_and_gate():
+    assert clarifying_question_count([{"role": "user", "content": "hi"}]) == 0
+    assert clarifying_question_count(_two_clarifying_asked()) == 2
+
+    allowed = {t["name"] for t in available_tools(True)}
+    capped = {t["name"] for t in available_tools(False)}
+    assert ASK_CLARIFYING_QUESTION in allowed
+    assert ASK_CLARIFYING_QUESTION not in capped  # withheld at the cap
+    assert "rag_search" in capped  # other tools still offered
+
+
+def test_clarifying_question_streams_as_text(monkeypatch):
+    # Turn 1: model calls ask_clarifying_question. Turn 2: it poses the question as text.
+    script = [
+        {"events": [], "final": _message([_tool_block("cq", ASK_CLARIFYING_QUESTION, {})])},
+        {
+            "events": [_delta("What is your "), _delta("client code?")],
+            "final": _message([_text_block("What is your client code?")]),
+        },
+    ]
+    client = _FakeAsyncClient(script)
+    monkeypatch.setattr(loop, "_client", lambda: client)
+    monkeypatch.setattr(loop, "build_system_prompt", lambda: "SYSTEM")
+
+    events = _collect(agent_reply_stream(_SESSION, [{"role": "user", "content": "help me"}]))
+    tokens = "".join(e.text for e in events if e.type == "token")
+    assert tokens == "What is your client code?"
+    assert events[-1].type == "done"
+    # The clarifying tool was offered on the first turn (under the cap).
+    assert any(t["name"] == ASK_CLARIFYING_QUESTION for t in client.messages.tools_seen[0])
+
+
+def test_clarifying_cap_withholds_tool_after_two(monkeypatch):
+    history = _two_clarifying_asked() + [{"role": "user", "content": "the reports screen"}]
+    script = [
+        {"events": [_delta("Here's how.")], "final": _message([_text_block("Here's how.")])},
+    ]
+    client = _FakeAsyncClient(script)
+    monkeypatch.setattr(loop, "_client", lambda: client)
+    monkeypatch.setattr(loop, "build_system_prompt", lambda: "SYSTEM")
+
+    _collect(agent_reply_stream(_SESSION, history))
+    # The 3rd clarifying question is impossible: the tool was not offered to the model.
+    offered = client.messages.tools_seen[0]
+    assert all(t["name"] != ASK_CLARIFYING_QUESTION for t in offered)
+
+
+def test_session_has_stable_unique_id():
+    s1 = Session(client_code="X", user_id="u", mobile_no="9", session_token="jwt")
+    s2 = Session(client_code="X", user_id="u", mobile_no="9", session_token="jwt")
+    assert s1.session_id  # populated
+    assert s1.session_id == s1.session_id  # stable for the object
+    assert s1.session_id != s2.session_id  # unique per construction
+    # An explicit id is preserved (the API layer supplies its own store key).
+    assert Session(
+        client_code="X", user_id="u", mobile_no="9", session_token="jwt", session_id="sess-1"
+    ).session_id == "sess-1"
 
 
 def test_system_prompt_has_tools_categories_and_guardrails(monkeypatch):

@@ -11,10 +11,11 @@ frontend collects the parameters, calls FinX, and resumes via
 :func:`resume_report_stream`, which appends the ``tool_result`` and continues to a
 compliant summary. RAG-backed answers carry the citations of the last ``rag_search``.
 
-Guardrails and the ≤2-clarifying / ≤10-message caps live in the system prompt
-(``backend.agent.prompt``); the loop additionally hard-caps total messages in code and
-offers a support ticket at the cap. The turn runs inside a root ``agent`` trace span tagged
-with the session's thread/user id.
+Guardrails live in the system prompt (``backend.agent.prompt``). Both caps are enforced in
+code: total messages are hard-capped (offering a support ticket at the cap), and clarifying
+questions are a structural ``ask_clarifying_question`` tool that is counted from history and
+withheld from the model once 2 have been asked, so a 3rd cannot be asked. The turn runs
+inside a root ``agent`` trace span tagged with the session's thread/user id.
 """
 
 from __future__ import annotations
@@ -27,10 +28,16 @@ from typing import Any
 from anthropic import Anthropic, AsyncAnthropic
 
 from backend.agent.cost import build_usage
-from backend.agent.prompt import MAX_MESSAGES, build_system_prompt
+from backend.agent.prompt import (
+    MAX_CLARIFYING_QUESTIONS,
+    MAX_MESSAGES,
+    build_system_prompt,
+)
 from backend.agent.tools import (
-    TOOLS,
+    ASK_CLARIFYING_QUESTION,
+    available_tools,
     dispatch_tool,
+    is_clarifying_tool,
     is_report_tool,
     report_request_fields,
 )
@@ -60,6 +67,14 @@ _TICKET_OFFER = (
 
 _STATUS_LOOKUP = "Looking up the knowledge base…"
 _STATUS_GENERATING = "Generating the answer…"
+
+# Fed back as the tool result when the model calls ask_clarifying_question: it turns the
+# intent-only tool call into the model asking its one question as plain text on the next
+# iteration, which ends the turn (awaiting the user) with clean text history.
+_CLARIFY_INSTRUCTION = (
+    "Ask the user this single clarifying question now, as your reply, then stop and wait for "
+    "their answer. Ask only for the missing detail you need, and do not call any tools."
+)
 
 
 # --------------------------------------------------------------------------------------
@@ -130,6 +145,28 @@ def conversation_message_count(messages: list[dict[str, Any]]) -> int:
     return sum(1 for m in messages if not _is_plumbing(m))
 
 
+def clarifying_question_count(messages: list[dict[str, Any]]) -> int:
+    """Count clarifying questions already asked in the conversation.
+
+    Reads the history deterministically — one per assistant ``ask_clarifying_question`` tool
+    call — so the loop can hard-cap clarifying questions without threading an external counter.
+    """
+    count = 0
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") == ASK_CLARIFYING_QUESTION
+                ):
+                    count += 1
+    return count
+
+
 def _citations_of(result: RagResult | None) -> tuple[Citation, ...]:
     """Citations of the last RAG result, or empty when RAG was not used this turn."""
     return tuple(chunk.citation for chunk in result.chunks) if result else ()
@@ -174,11 +211,14 @@ async def _run_turn(
     try:
         yield StatusEvent(message=_STATUS_GENERATING)
         while True:
+            allow_clarifying = (
+                clarifying_question_count(messages) < MAX_CLARIFYING_QUESTIONS
+            )
             async with client.messages.stream(
                 model=settings.anthropic_model,
                 max_tokens=_MAX_TOKENS,
                 system=system,
-                tools=TOOLS,
+                tools=available_tools(allow_clarifying),
                 messages=messages,
             ) as stream:
                 async for event in stream:
@@ -215,14 +255,19 @@ async def _run_turn(
 
             tool_results: list[dict[str, Any]] = []
             for tool_use in tool_uses:
-                yield StatusEvent(message=_STATUS_LOOKUP)
-                result = dispatch_tool(tool_use.name, tool_use.input, session)
-                last_rag = result
+                if is_clarifying_tool(tool_use.name):
+                    # Intent-only: prompt the model to pose its question as text next iteration.
+                    content = _CLARIFY_INSTRUCTION
+                else:
+                    yield StatusEvent(message=_STATUS_LOOKUP)
+                    result = dispatch_tool(tool_use.name, tool_use.input, session)
+                    last_rag = result
+                    content = _rag_tool_result(result)
                 tool_results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_use.id,
-                        "content": _rag_tool_result(result),
+                        "content": content,
                     }
                 )
             messages.append({"role": "user", "content": tool_results})
@@ -282,7 +327,7 @@ async def agent_reply_stream(
     @tracer.observe(type="agent", name="agent_reply_stream")
     async def _traced() -> AsyncIterator[SSEEvent]:
         tracer.update_current_trace(
-            thread_id=session.client_code, user_id=session.user_id
+            thread_id=session.session_id, user_id=session.user_id
         )
         if conversation_message_count(messages) >= MAX_MESSAGES:
             async for frame in _ticket_offer_stream(prior_cost_inr):
@@ -335,7 +380,7 @@ async def resume_report_stream(
     @tracer.observe(type="agent", name="resume_report_stream")
     async def _traced() -> AsyncIterator[SSEEvent]:
         tracer.update_current_trace(
-            thread_id=session.client_code, user_id=session.user_id
+            thread_id=session.session_id, user_id=session.user_id
         )
         async for frame in _run_turn(session, resumed, prior_cost_inr):
             yield frame
@@ -370,7 +415,7 @@ def agent_reply(
     @tracer.observe(type="agent", name="agent_reply")
     def _traced() -> AgentReply:
         tracer.update_current_trace(
-            thread_id=session.client_code, user_id=session.user_id
+            thread_id=session.session_id, user_id=session.user_id
         )
         settings = get_settings()
         model = settings.anthropic_model
@@ -392,11 +437,14 @@ def agent_reply(
         final_text = ""
 
         while True:
+            allow_clarifying = (
+                clarifying_question_count(work) < MAX_CLARIFYING_QUESTIONS
+            )
             response = client.messages.create(
                 model=model,
                 max_tokens=_MAX_TOKENS,
                 system=system,
-                tools=TOOLS,
+                tools=available_tools(allow_clarifying),
                 messages=work,
             )
             total_input += response.usage.input_tokens
@@ -420,6 +468,8 @@ def agent_reply(
                         "frontend widget, which is not available in this context. Tell the "
                         "user to use the report widget; do not fabricate any values."
                     )
+                elif is_clarifying_tool(tool_use.name):
+                    content = _CLARIFY_INSTRUCTION
                 else:
                     result = dispatch_tool(tool_use.name, tool_use.input, session)
                     last_rag = result

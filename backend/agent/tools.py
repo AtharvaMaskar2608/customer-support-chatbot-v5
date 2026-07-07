@@ -20,8 +20,45 @@ from backend.rag.schemas import RAG_SEARCH_TOOL
 from backend.rag.search import rag_search
 from backend.tools.schemas import CML_REPORT_TOOL, CONTRACT_NOTE_TOOL
 
+# Structural marker for a clarifying question. It is intent-only (no parameters): the model
+# calls it to signal it needs a missing detail, and the loop then prompts it to write the
+# single question as its reply. Making the ask a tool call lets the loop count clarifying
+# questions deterministically from history and hard-cap them (see backend.agent.loop).
+ASK_CLARIFYING_QUESTION = "ask_clarifying_question"
+ASK_CLARIFYING_QUESTION_TOOL: dict[str, Any] = {
+    "name": ASK_CLARIFYING_QUESTION,
+    "description": (
+        "Call this (no parameters) only when you genuinely need a missing detail from the "
+        "user before you can help. After calling it you will be prompted to write the single "
+        "clarifying question as your reply. Prefer answering with what you already have; you "
+        "may ask at most two clarifying questions per conversation."
+    ),
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
 # The full tool list handed to the Messages API on every turn.
-TOOLS: list[dict[str, Any]] = [RAG_SEARCH_TOOL, CML_REPORT_TOOL, CONTRACT_NOTE_TOOL]
+TOOLS: list[dict[str, Any]] = [
+    RAG_SEARCH_TOOL,
+    CML_REPORT_TOOL,
+    CONTRACT_NOTE_TOOL,
+    ASK_CLARIFYING_QUESTION_TOOL,
+]
+
+
+def is_clarifying_tool(name: str) -> bool:
+    """Return whether ``name`` is the structural clarifying-question tool."""
+    return name == ASK_CLARIFYING_QUESTION
+
+
+def available_tools(allow_clarifying: bool) -> list[dict[str, Any]]:
+    """Tools offered to the model this turn.
+
+    Withholds ``ask_clarifying_question`` once the conversation has hit the clarifying-question
+    cap, so the model literally cannot ask a third — the cap is a constraint, not a request.
+    """
+    if allow_clarifying:
+        return TOOLS
+    return [tool for tool in TOOLS if tool is not ASK_CLARIFYING_QUESTION_TOOL]
 
 # Report tool name -> (report_type for the SSE frame, fields the widget must collect).
 # The report_type values match ``ReportRequestEvent.report_type``; the fields mirror the

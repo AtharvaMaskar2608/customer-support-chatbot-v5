@@ -6,6 +6,8 @@ stays single-sourced. Models are ``frozen`` (immutable, hashable) and kept minim
 additive so freezing them early does not force edits later.
 """
 
+from uuid import uuid4
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -60,7 +62,11 @@ class Session(BaseModel):
     """Authenticated user/session identity supplied by the POC login form.
 
     ``session_token`` is a per-session FinX JWT; the API layer trims sensitive fields
-    before echoing session state to the frontend.
+    before echoing session state to the frontend. ``session_id`` uniquely identifies this
+    session/conversation (distinct from the per-client ``client_code``) and is used as the
+    tracing ``thread_id`` so a conversation's turns group together. It defaults to a
+    generated id; the API layer supplies its own so the session store key and the trace
+    thread id match, and it must stay stable for the session's lifetime.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -69,6 +75,7 @@ class Session(BaseModel):
     user_id: str
     mobile_no: str
     session_token: str
+    session_id: str = Field(default_factory=lambda: uuid4().hex)
 
 
 class Usage(BaseModel):

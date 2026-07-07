@@ -39,9 +39,19 @@ When the model calls a report tool, the loop SHALL emit a `report_request` frame
 
 ### Requirement: Conversation caps
 
-The loop SHALL allow at most 2 clarifying questions per conversation and at most 10 total messages; when a cap is reached without resolution, the assistant SHALL offer to raise a support ticket.
+The loop SHALL allow at most 2 clarifying questions per conversation and at most 10 total messages, both **enforced in code** (not by prompt alone). Clarifying questions SHALL be a structural `ask_clarifying_question` tool so they can be counted deterministically from the message history; once 2 have been asked, the loop SHALL withhold the tool from the model on subsequent turns so a 3rd cannot be asked. When a cap is reached without resolution, the assistant SHALL offer to raise a support ticket.
 
-#### Scenario: Cap reached offers a ticket
+#### Scenario: Clarifying questions are counted structurally
 
-- **WHEN** the conversation reaches 10 messages or a 3rd clarifying question would be needed
+- **WHEN** the model needs a missing detail
+- **THEN** it asks via the `ask_clarifying_question` tool (rather than inline free text), and the loop counts prior `ask_clarifying_question` tool calls in the message history to know how many have been asked
+
+#### Scenario: Third clarifying question is prevented in code
+
+- **WHEN** 2 clarifying questions have already been asked in the conversation
+- **THEN** the loop does not offer the `ask_clarifying_question` tool to the model, so it cannot ask a 3rd; the assistant answers with what it has or offers to raise a support ticket
+
+#### Scenario: Message cap offers a ticket
+
+- **WHEN** the conversation reaches 10 messages without resolution
 - **THEN** the assistant offers to raise a support query/ticket rather than continuing to probe
