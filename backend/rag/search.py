@@ -13,6 +13,7 @@ from typing import Any
 
 from pgvector import Vector
 
+from backend.config.settings import get_settings
 from backend.contracts.models import Citation, RagChunk, RagResult
 from backend.db.query import fetch
 from backend.rag.embed import embed_query
@@ -130,7 +131,16 @@ def rag_search(query: str, top_k: int = 5) -> RagResult:
     """
     tracer = get_tracer()
 
-    @tracer.observe(type="retriever", name="rag_search")
+    # ``embedder``/``top_k`` are retriever-span attributes set on the ``@observe`` decorator
+    # (not ``update_current_span``): Confident AI rejects a retriever-span trace payload
+    # without ``embedder``, so it is set to the embedding model (the same source
+    # ``embed_query`` uses) to keep RAG turns traceable.
+    @tracer.observe(
+        type="retriever",
+        name="rag_search",
+        embedder=get_settings().embedding_model,
+        top_k=top_k,
+    )
     def _traced() -> RagResult:
         result = _retrieve(query, top_k)
         tracer.update_current_span(
