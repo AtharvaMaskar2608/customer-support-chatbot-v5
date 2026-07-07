@@ -20,7 +20,7 @@ Internal QA POC. The login is deliberately simple (phone + user id + session tok
 - **Cost card:** top-left, web-only; updated from each `usage` frame's `cumulative_cost_inr`; per-message cost+latency shown beneath the message.
 - **Report widget:** `report_request` frame → modal/inline widget with a native date-picker for `contract_date` (emits `DD-MM-YYYY`) and inputs for `client_id`/`mobile_no` prefilled from the session; submit `POST /report {session_id, report_type, params, tool_use_id}` and resume rendering the stream.
 - **State:** keep `session_id`, the running `messages`, and any pending `tool_use_id` in memory to bridge the widget interaction.
-- **Styling:** Tailwind (via CDN or prebuilt CSS), white/blue palette, responsive breakpoints so it works on mobile.
+- **Styling:** Tailwind prebuilt to a committed static `css/tailwind.css` (`frontend/tailwind.config.js`; rebuild: `npx tailwindcss@3 -c tailwind.config.js -o css/tailwind.css --minify`). Dark liquid-glass palette (deep indigo-black surfaces, electric-blue/cyan gradient accents), mobile-first breakpoints.
 
 ## Risks / Trade-offs
 

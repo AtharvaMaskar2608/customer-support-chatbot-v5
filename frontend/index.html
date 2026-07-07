@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#05060e" />
+  <title>Choice FinX · AI Assist</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%234f7cff'/><stop offset='1' stop-color='%2322d3ee'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><text x='50' y='68' font-size='52' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>✦</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  <!-- Precompiled Tailwind (no Play CDN, no runtime JIT).
+       Rebuild after class changes in index.html or js/app.js:
+         npx tailwindcss@3 -c tailwind.config.js -o css/tailwind.css --minify -->
+  <link rel="stylesheet" href="css/tailwind.css" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body class="font-sans text-ink antialiased min-h-screen overflow-x-hidden">
+
+  <!-- ✦ Aurora backdrop -->
+  <div class="aurora" aria-hidden="true">
+    <div class="aurora-blob aurora-1"></div>
+    <div class="aurora-blob aurora-2"></div>
+    <div class="aurora-blob aurora-3"></div>
+    <div class="aurora-grid"></div>
+    <div class="aurora-noise"></div>
+  </div>
+
+  <!-- ════════════════════ LOGIN VIEW ════════════════════ -->
+  <main id="login-view" class="relative z-10 flex items-center justify-center px-5 py-10">
+    <div class="w-full max-w-md lg:max-w-4xl lg:grid lg:grid-cols-2 lg:gap-16 lg:items-center">
+      <div class="text-center lg:text-left mb-9 lg:mb-0 login-hero">
+        <div class="brand-mark logo-float inline-flex items-center justify-center w-16 h-16 rounded-[1.35rem] mb-7">
+          <span class="text-white text-3xl font-display font-bold">✦</span>
+        </div>
+        <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400 mb-2.5">AI copilot for your money</p>
+        <h1 class="font-display font-bold tracking-tight text-white text-[2.55rem] leading-[1.06] sm:text-5xl lg:text-[3.4rem]">
+          Choice FinX<br /><span class="gradient-text">Assist</span>
+        </h1>
+        <p class="mt-4 text-slate-400 text-[15px] leading-relaxed max-w-xs mx-auto lg:mx-0">
+          Reports, charges and account answers — streamed live, with receipts.
+        </p>
+        <div class="mt-5 flex flex-wrap items-center justify-center lg:justify-start gap-2">
+          <span class="trust-chip">⚡ Streams live</span>
+          <span class="trust-chip">📎 Cited answers</span>
+          <span class="trust-chip">🔒 Token stays local</span>
+        </div>
+      </div>
+
+      <form id="login-form" class="glass-card rounded-[1.75rem] p-6 sm:p-7 space-y-5 login-hero" style="animation-delay: 0.12s">
+        <div>
+          <label for="login-phone" class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1.5">Phone number</label>
+          <input id="login-phone" type="tel" autocomplete="tel" required placeholder="98765 43210"
+                 class="input-field" />
+        </div>
+        <div>
+          <label for="login-userid" class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1.5">User ID</label>
+          <input id="login-userid" type="text" required placeholder="Your FinX user id"
+                 class="input-field" />
+        </div>
+        <div>
+          <label for="login-token" class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1.5">Session token</label>
+          <input id="login-token" type="password" required placeholder="Paste your session JWT"
+                 class="input-field" />
+        </div>
+        <div>
+          <label for="login-clientcode" class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1.5">
+            Client code <span class="normal-case tracking-normal font-normal text-slate-400">(optional — prefills report widgets)</span>
+          </label>
+          <input id="login-clientcode" type="text" placeholder="e.g. X001234" class="input-field" />
+        </div>
+
+        <p id="login-error" class="hidden text-sm text-rose-300 bg-rose-500/10 border border-rose-400/25 rounded-xl px-3.5 py-2.5"></p>
+
+        <button id="login-btn" type="submit"
+                class="btn-press btn-shine w-full min-h-[52px] rounded-2xl font-display font-semibold text-white text-base
+                       bg-gradient-to-r from-brand-600 via-brand-500 to-cyan-500
+                       shadow-glow transition-shadow duration-300 hover:shadow-lift
+                       disabled:opacity-60 disabled:cursor-wait">
+          Enter the chat →
+        </button>
+        <p class="text-center text-[11px] text-slate-400 leading-relaxed">Internal QA build · your token stays on this device &amp; the FinX API</p>
+      </form>
+    </div>
+  </main>
+
+  <!-- ════════════════════ CHAT VIEW ════════════════════ -->
+  <main id="chat-view" class="relative z-10 hidden flex flex-col">
+
+    <!-- Header (blur lives on ::before so #cost-card can be viewport-fixed on desktop) -->
+    <header class="glass-bar relative sticky top-0 z-30">
+      <div class="max-w-3xl mx-auto px-4 py-2.5 flex items-center gap-3">
+        <div class="brand-tile flex items-center justify-center w-9 h-9 rounded-xl shrink-0">
+          <span class="text-white text-lg font-display font-bold">✦</span>
+        </div>
+        <div class="min-w-0">
+          <h1 class="font-display font-bold text-[15px] leading-tight truncate text-white">Choice FinX <span class="gradient-text">Assist</span></h1>
+          <p class="text-[11px] text-slate-400 flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-dot shrink-0"></span>
+            <span id="header-user" class="truncate">online</span>
+          </p>
+        </div>
+
+        <!-- Cumulative cost: compact pill in the header through lg (the fixed
+             card would overlap the message column at 768–1150px); full glass
+             card floats top-left only at xl+ where there is real margin -->
+        <aside id="cost-card"
+               class="cost-card-in glass-card ml-auto mr-0.5 shrink-0 flex items-center rounded-full px-3 py-1.5
+                      xl:block xl:fixed xl:left-5 xl:top-24 xl:z-20 xl:ml-0 xl:mr-0 xl:w-48 xl:rounded-2xl xl:px-4 xl:py-3.5">
+          <p class="hidden xl:block text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Session spend</p>
+          <p class="font-display font-bold leading-tight gradient-text text-[13px] xl:text-[26px] xl:mt-0.5">₹<span id="cost-total" class="tabular-nums">0.0000</span></p>
+          <div class="hidden xl:block mt-2 h-1 rounded-full bg-white/10 overflow-hidden">
+            <div id="cost-bar" class="h-full w-0 bg-gradient-to-r from-brand-500 via-cyan-400 to-violet-500 transition-all duration-700"></div>
+          </div>
+          <p class="hidden xl:block mt-1.5 text-[11px] text-slate-400"><span id="cost-turns">0</span> turns · live INR</p>
+        </aside>
+
+        <button id="logout-btn" aria-label="Log out" title="Log out"
+                class="shrink-0 ml-auto flex items-center gap-1.5 min-h-[44px] min-w-[44px] justify-center px-2.5 sm:px-3.5 rounded-xl text-xs font-medium text-slate-400
+                       hover:text-white hover:bg-white/5 transition-colors">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+            <path d="M15 3h4a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3" />
+          </svg>
+          <span class="hidden sm:inline">Log out</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Messages -->
+    <div id="scroll-region" class="flex-1 min-h-0 overflow-y-auto">
+      <div id="messages" class="max-w-3xl mx-auto px-4 pt-6 pb-44 space-y-6">
+
+        <!-- Empty-state hero (removed on first message) -->
+        <div id="empty-state" class="text-center pt-10 sm:pt-14 pb-6 login-hero">
+          <div class="brand-mark logo-float inline-flex items-center justify-center w-[4.5rem] h-[4.5rem] rounded-[1.5rem] mb-7">
+            <span class="text-white text-[2rem] font-display font-bold">✦</span>
+          </div>
+          <p class="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400 mb-2">Choice FinX Assist</p>
+          <h2 class="font-display font-bold tracking-tight text-white text-[2rem] leading-[1.12] sm:text-4xl">
+            Hey <span id="empty-name" class="gradient-text">there</span> —<br class="sm:hidden" />
+            what do you need?
+          </h2>
+          <p class="mt-3 text-slate-400 text-sm leading-relaxed max-w-sm mx-auto">
+            Pull reports, check charges, or search the FinX knowledge base. Answers stream in live, with receipts.
+          </p>
+          <div id="suggestions" class="mt-8 flex flex-wrap justify-center gap-2.5"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Composer -->
+    <footer class="fixed bottom-0 inset-x-0 z-30 composer-fade">
+      <div class="composer-shell max-w-3xl mx-auto px-4 pt-10">
+        <form id="composer" class="composer-ring glass-card rounded-[1.65rem] flex items-end gap-2 p-2 pl-5">
+          <textarea id="input" rows="1" placeholder="Ask anything about Choice FinX…"
+                    class="flex-1 resize-none bg-transparent outline-none text-ink placeholder:text-slate-500 py-2.5 max-h-40"></textarea>
+          <button id="send-btn" type="submit" disabled aria-label="Send message"
+                  class="btn-press btn-shine shrink-0 w-11 h-11 rounded-[1.05rem] flex items-center justify-center text-white
+                         bg-gradient-to-br from-brand-600 to-cyan-500 shadow-glow
+                         transition-shadow duration-300 hover:shadow-lift
+                         disabled:opacity-40 disabled:shadow-none">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5">
+              <path d="M12 19V5M5 12l7-7 7 7" />
+            </svg>
+          </button>
+        </form>
+        <p class="text-center text-[11px] text-slate-400 mt-2.5">
+          AI answers are factual only — never investment advice. <span class="hidden sm:inline">Cost &amp; latency shown per message.</span>
+        </p>
+      </div>
+    </footer>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@ QA testers need a minimal UI to exercise the agent: log in with their session to
 
 ## What Changes
 
-- Static **Tailwind** app (white/blue, mobile-responsive), no build backend required.
+- Static **Tailwind** app (dark liquid-glass theme with blue/cyan gradients, mobile-first; Tailwind precompiled to a committed static CSS — no build backend required at runtime).
 - **Login page:** phone number + user id + session token inputs (all **trimmed**) → `POST /session`; store `session_id`.
 - **Chat view:**
   - Opens SSE to `POST /chat`; renders `status` steps ("Looking up the knowledge base…", "Generating the answer…"), appends streamed `token`s.

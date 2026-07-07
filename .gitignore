@@ -225,3 +225,4 @@ __marimo__/
 
 # DeepEval run cache / telemetry (local run output; goldens.json + report.md are committed)
 .deepeval/
+.gstack/
