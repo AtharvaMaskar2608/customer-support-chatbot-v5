@@ -37,7 +37,12 @@ class Settings(BaseSettings):
     anthropic_model: str = Field("claude-sonnet-4-5", alias="ANTHROPIC_MODEL")
     embedding_model: str = Field("text-embedding-3-large", alias="EMBEDDING_MODEL")
 
-    # --- FinX report APIs (CML and Contract Note live on different hosts) ---
+    # --- FinX middleware reports (single base URL for /api/middleware/* and /middleware-go/*) ---
+    finx_middleware_base_url: str = Field(
+        "https://finx.choiceindia.com", alias="FINX_MIDDLEWARE_BASE_URL"
+    )
+
+    # --- Legacy FinX report APIs (CML and Contract Note; removed by finx-middleware-tools) ---
     finx_cml_base_url: str = Field(
         "https://finxomne.choiceindia.com", alias="FINX_CML_BASE_URL"
     )

@@ -6,6 +6,7 @@ stays single-sourced. Models are ``frozen`` (immutable, hashable) and kept minim
 additive so freezing them early does not force edits later.
 """
 
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,6 +59,35 @@ class ReportResult(BaseModel):
     error: str | None = None
 
 
+class ReportColumn(BaseModel):
+    """One column of a tabular report: the row-dict ``key`` and its header ``label``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    label: str
+
+
+class ReportRenderPayload(BaseModel):
+    """The JSON body ``POST /report`` returns for the frontend to render directly.
+
+    Report results bypass the LLM entirely, so the backend shapes rows/columns
+    server-side and the frontend renderer stays a generic switch on ``kind``:
+    ``table`` (``columns`` + ``rows``), ``link`` (``url``), or ``empty``/``error``
+    (``message``). The ``url`` (e.g. a tax-report PDF) rides only in this payload and
+    MUST NEVER enter model context — generated report URLs are unauthenticated.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["table", "link", "empty", "error"]
+    title: str
+    columns: tuple[ReportColumn, ...] = ()
+    rows: tuple[dict, ...] = ()
+    url: str | None = None
+    message: str | None = None
+
+
 class Session(BaseModel):
     """Authenticated user/session identity supplied by the POC login form.
 
@@ -67,6 +97,11 @@ class Session(BaseModel):
     tracing ``thread_id`` so a conversation's turns group together. It defaults to a
     generated id; the API layer supplies its own so the session store key and the trace
     thread id match, and it must stay stable for the session's lifetime.
+
+    ``finx_session_id`` is the FinX middleware SessionId used to authorize report calls —
+    distinct from the legacy JWT ``session_token`` (both are collected by the login form).
+    It defaults to ``""`` so existing constructors stay valid; requiredness is enforced at
+    the API boundary in ``finx-middleware-tools``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -76,6 +111,7 @@ class Session(BaseModel):
     mobile_no: str
     session_token: str
     session_id: str = Field(default_factory=lambda: uuid4().hex)
+    finx_session_id: str = ""
 
 
 class Usage(BaseModel):
@@ -91,10 +127,17 @@ class Usage(BaseModel):
 
 
 class AgentReply(BaseModel):
-    """A completed agent turn: reply text plus its citations and usage."""
+    """A completed agent turn: reply text plus its citations and usage.
+
+    ``tools_called`` records the tool names invoked during the turn (e.g. ``rag_search``,
+    a report tool name, or ``ask_clarifying_question``), so agentic intent-routing evals
+    can assert transactional-report vs RAG-explanation routing deterministically. It
+    defaults to ``()`` until the agent loop populates it in ``finx-middleware-tools``.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     text: str
     citations: tuple[Citation, ...] = ()
     usage: Usage | None = None
+    tools_called: tuple[str, ...] = ()

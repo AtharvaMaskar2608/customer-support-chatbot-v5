@@ -8,9 +8,46 @@ collect, so the model never supplies report parameter values itself.
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.contracts.models import Citation, Usage
+
+
+class CardOption(BaseModel):
+    """One selectable card in a ``CardStep``.
+
+    ``value`` is an opaque FinX API token (e.g. ``"MTF"``, ``"Group1"``,
+    ``"2025-2026"``) that the backend maps to an upstream parameter; the frontend
+    never interprets it, only echoes it back on selection.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str
+    value: str
+
+
+class CardStep(BaseModel):
+    """A widget step presenting a set of variant cards for ``param``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["cards"] = "cards"
+    param: str
+    options: tuple[CardOption, ...]
+
+
+class DateRangeStep(BaseModel):
+    """A widget step collecting a ``from``/``to`` date range (``YYYY-MM-DD``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["date_range"] = "date_range"
+    from_param: str = "from_date"
+    to_param: str = "to_date"
+
+
+WidgetStep = Annotated[Union[CardStep, DateRangeStep], Field(discriminator="kind")]
 
 
 class StatusEvent(BaseModel):
@@ -45,12 +82,24 @@ class ReportRequestEvent(BaseModel):
     """Signals the frontend to collect report parameters via a structured widget.
 
     The agent only decides *when* a report is relevant; the widget supplies the
-    parameter values, which are fed back via a separate resume call.
+    parameter values, which are fed back via a separate resume call. ``steps`` is the
+    declarative widget spec the frontend chains in order (a card picker, then a date
+    range, etc.). ``fields`` is the legacy flat path, retained defaulted to ``[]`` until
+    ``finx-middleware-tools`` removes it.
     """
 
     type: Literal["report_request"] = "report_request"
-    report_type: Literal["cml", "contract_note"]
-    fields: list[str]
+    report_type: Literal[
+        "ledger",
+        "global_pnl",
+        "detailed_pnl",
+        "contract_notes",
+        "tax_report",
+        "cml",  # legacy; removed by finx-middleware-tools
+        "contract_note",  # legacy; removed by finx-middleware-tools
+    ]
+    steps: list[WidgetStep] = []
+    fields: list[str] = []  # legacy; removed by finx-middleware-tools
     tool_use_id: str
 
 

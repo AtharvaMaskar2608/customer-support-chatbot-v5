@@ -4,7 +4,10 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from backend.contracts.events import (
+    CardOption,
+    CardStep,
     CitationsEvent,
+    DateRangeStep,
     DoneEvent,
     ErrorEvent,
     ReportRequestEvent,
@@ -12,16 +15,21 @@ from backend.contracts.events import (
     StatusEvent,
     TokenEvent,
     UsageEvent,
+    WidgetStep,
 )
 from backend.contracts.models import (
     AgentReply,
     Citation,
     RagChunk,
     RagResult,
+    ReportColumn,
+    ReportRenderPayload,
     ReportResult,
     Session,
     Usage,
 )
+
+_widget_step = TypeAdapter(WidgetStep)
 
 _sse = TypeAdapter(SSEEvent)
 
@@ -62,6 +70,57 @@ def test_session_and_agent_reply_round_trip():
     assert AgentReply.model_validate(reply.model_dump()) == reply
 
 
+def test_session_finx_session_id_default_and_explicit():
+    default = Session(
+        client_code="X130627", user_id="u1", mobile_no="9920885615", session_token="jwt"
+    )
+    assert default.finx_session_id == ""
+
+    explicit = Session(
+        client_code="X130627",
+        user_id="u1",
+        mobile_no="9920885615",
+        session_token="jwt",
+        finx_session_id="abc123",
+    )
+    assert explicit.finx_session_id == "abc123"
+    assert Session.model_validate(explicit.model_dump()) == explicit
+
+
+def test_agent_reply_tools_called_default_and_explicit():
+    assert AgentReply(text="hi").tools_called == ()
+
+    reply = AgentReply(text="pulling your ledger", tools_called=("ledger",))
+    assert reply.tools_called == ("ledger",)
+    assert AgentReply.model_validate(reply.model_dump()) == reply
+
+
+def test_report_render_payload_table_shape():
+    payload = ReportRenderPayload(
+        kind="table",
+        title="MTF Ledger · 2026-04-01 → 2026-07-15",
+        columns=(ReportColumn(key="Narration", label="Description"),),
+        rows=({"Narration": "Opening balance"},),
+    )
+    dumped = payload.model_dump()
+    assert dumped["kind"] == "table"
+    assert dumped["columns"] == ({"key": "Narration", "label": "Description"},)
+    assert dumped["rows"] == ({"Narration": "Opening balance"},)
+    assert ReportRenderPayload.model_validate(dumped) == payload
+
+
+def test_report_render_payload_link_empty_error_shapes():
+    link = ReportRenderPayload(kind="link", title="Tax Report", url="https://x/report.pdf")
+    assert link.url == "https://x/report.pdf" and link.columns == () and link.rows == ()
+
+    empty = ReportRenderPayload(kind="empty", title="Ledger", message="Data not found.")
+    assert empty.message == "Data not found." and empty.url is None
+
+    error = ReportRenderPayload(kind="error", title="Ledger", message="upstream 500")
+    for payload in (link, empty, error):
+        assert ReportRenderPayload.model_validate(payload.model_dump()) == payload
+
+
 def test_models_are_frozen():
     citation = Citation(topic="x")
     with pytest.raises(ValidationError):
@@ -76,6 +135,20 @@ def test_models_are_frozen():
         CitationsEvent(citations=[Citation(topic="t")]),
         UsageEvent(usage=Usage(cumulative_cost_inr=2.0)),
         ReportRequestEvent(report_type="cml", fields=["client_id"], tool_use_id="tu_1"),
+        ReportRequestEvent(
+            report_type="ledger",
+            steps=[
+                CardStep(
+                    param="group",
+                    options=(
+                        CardOption(label="Normal Ledger", value="Group1"),
+                        CardOption(label="MTF Ledger", value="MTF"),
+                    ),
+                ),
+                DateRangeStep(from_param="from_date", to_param="to_date"),
+            ],
+            tool_use_id="tu_2",
+        ),
         DoneEvent(stop_reason="end_turn"),
         ErrorEvent(message="boom"),
     ],
@@ -89,3 +162,28 @@ def test_usage_frame_carries_cumulative_cost():
     dumped = UsageEvent(usage=Usage(cumulative_cost_inr=3.14)).model_dump()
     assert dumped["type"] == "usage"
     assert dumped["usage"]["cumulative_cost_inr"] == 3.14
+
+
+def test_report_request_defaults_are_additive():
+    """Legacy constructor (no ``steps``) and new constructor both validate."""
+    legacy = ReportRequestEvent(report_type="cml", fields=["client_id"], tool_use_id="tu_1")
+    assert legacy.steps == [] and legacy.fields == ["client_id"]
+
+    modern = ReportRequestEvent(report_type="tax_report", tool_use_id="tu_2")
+    assert modern.steps == [] and modern.fields == []
+
+
+def test_widget_step_deserializes_by_kind():
+    cards = _widget_step.validate_python(
+        {"kind": "cards", "param": "group", "options": [{"label": "MTF", "value": "MTF"}]}
+    )
+    assert isinstance(cards, CardStep) and cards.options[0].value == "MTF"
+
+    date_range = _widget_step.validate_python({"kind": "date_range"})
+    assert isinstance(date_range, DateRangeStep)
+    assert date_range.from_param == "from_date" and date_range.to_param == "to_date"
+
+
+def test_widget_step_unknown_kind_rejected():
+    with pytest.raises(ValidationError):
+        _widget_step.validate_python({"kind": "dropdown", "param": "group"})
