@@ -195,16 +195,35 @@ def _post_json(app, path: str, payload: dict) -> httpx.Response:
 # --------------------------------------------------------------------------------------
 
 
+def _login_body(**overrides) -> dict:
+    """A complete, valid login payload; override individual fields per test."""
+    body = {
+        "userId": "u1",
+        "mobileNo": "9920885615",
+        "sessionToken": "jwt.abc.def",
+        "finxSessionId": "SESSION_ABC",
+        "clientCode": "X130627",
+    }
+    body.update(overrides)
+    return body
+
+
+def _new_session(app) -> str:
+    """Create a valid session and return its id."""
+    return _post_json(app, "/session", _login_body()).json()["session_id"]
+
+
 def test_session_trims_inputs(app):
     response = _post_json(
         app,
         "/session",
-        {
-            "userId": "  u1  ",
-            "mobileNo": " 9920885615 ",
-            "sessionToken": "  jwt.abc.def  ",
-            "clientCode": "  X130627 ",
-        },
+        _login_body(
+            userId="  u1  ",
+            mobileNo=" 9920885615 ",
+            sessionToken="  jwt.abc.def  ",
+            finxSessionId="  SESSION_ABC  ",
+            clientCode="  X130627 ",
+        ),
     )
     assert response.status_code == 200
     session_id = response.json()["session_id"]
@@ -215,17 +234,25 @@ def test_session_trims_inputs(app):
     assert stored.user_id == "u1"
     assert stored.mobile_no == "9920885615"
     assert stored.session_token == "jwt.abc.def"
+    assert stored.finx_session_id == "SESSION_ABC"
     assert stored.client_code == "X130627"
 
 
-def test_session_defaults_optional_client_code(app):
-    response = _post_json(
-        app,
-        "/session",
-        {"userId": "u1", "mobileNo": "9920885615", "sessionToken": "jwt.x"},
-    )
-    session_id = response.json()["session_id"]
-    assert sessions.get_session(session_id).client_code == ""
+def test_session_requires_finx_session_id(app):
+    response = _post_json(app, "/session", _login_body(finxSessionId="   "))
+    assert response.status_code == 422
+
+
+def test_session_requires_client_code(app):
+    response = _post_json(app, "/session", _login_body(clientCode=""))
+    assert response.status_code == 422
+
+
+def test_session_missing_finx_session_id_field_is_422(app):
+    body = _login_body()
+    del body["finxSessionId"]
+    response = _post_json(app, "/session", body)
+    assert response.status_code == 422
 
 
 # --------------------------------------------------------------------------------------
@@ -243,9 +270,7 @@ def test_chat_streams_to_done(app, monkeypatch):
     ]
     _patch_stream(monkeypatch, script)
 
-    session_id = _post_json(
-        app, "/session", {"userId": "u1", "mobileNo": "9", "sessionToken": "jwt.x"}
-    ).json()["session_id"]
+    session_id = _new_session(app)
 
     frames = _post_sse(
         app,
@@ -285,9 +310,7 @@ def test_chat_failure_yields_error_frame(app, monkeypatch):
 
     monkeypatch.setattr(routes, "agent_reply_stream", _boom)
 
-    session_id = _post_json(
-        app, "/session", {"userId": "u1", "mobileNo": "9", "sessionToken": "jwt.x"}
-    ).json()["session_id"]
+    session_id = _new_session(app)
 
     frames = _post_sse(
         app,
@@ -298,79 +321,176 @@ def test_chat_failure_yields_error_frame(app, monkeypatch):
 
 
 # --------------------------------------------------------------------------------------
-# POST /report
+# POST /report — plain JSON render payload; no SSE, no Anthropic call
 # --------------------------------------------------------------------------------------
 
 
-def test_report_runs_tool_and_streams_summary(app, monkeypatch):
-    # The resume turn streams a factual summary from the (mocked) report result.
-    script = [
-        {
-            "events": [_delta("Your contract note "), _delta("has 3 trades.")],
-            "final": _message([_text_block("Your contract note has 3 trades.")]),
-        },
-    ]
-    _patch_stream(monkeypatch, script)
+@pytest.fixture(autouse=True)
+def _no_anthropic(monkeypatch):
+    """Fail loudly if any /report path constructs an Anthropic client (design D5)."""
 
+    def _boom(*args, **kwargs):
+        raise AssertionError("/report must not call the Anthropic API")
+
+    monkeypatch.setattr(loop, "_client", _boom)
+    monkeypatch.setattr(loop, "_sync_client", _boom)
+
+
+def test_report_ledger_returns_table_payload(app, monkeypatch):
     captured: dict[str, Any] = {}
 
-    def _fake_contract_note(session, mobile_no, contract_date, **kwargs):
-        captured["mobile_no"] = mobile_no
-        captured["contract_date"] = contract_date
-        return ReportResult(ok=True, data={"trades": 3})
+    def _fake_get_ledger(session, group, from_date, to_date, **kwargs):
+        captured.update(group=group, from_date=from_date, to_date=to_date)
+        return ReportResult(
+            ok=True,
+            data={
+                "Status": "Success",
+                "Response": [
+                    {"trd_Date": "2026-04-01T00:00:00", "voucher": "OPENING", "Debit": 0.0}
+                ],
+                "Reason": "",
+            },
+        )
 
-    monkeypatch.setattr(routes, "contract_note", _fake_contract_note)
-
-    session_id = _post_json(
-        app, "/session", {"userId": "u1", "mobileNo": "9", "sessionToken": "jwt.x"}
-    ).json()["session_id"]
-
-    paused = [
-        {"role": "user", "content": "my contract note"},
-        {
-            "role": "assistant",
-            "content": [
-                {"type": "tool_use", "id": "tu_cn", "name": "contract_note", "input": {}}
-            ],
-        },
-    ]
-    frames = _post_sse(
-        app,
-        "/report",
-        {
-            "session_id": session_id,
-            "report_type": "contract_note",
-            "params": {"mobile_no": "9920885615", "contract_date": "01-07-2024"},
-            "tool_use_id": "tu_cn",
-            "messages": paused,
-        },
-    )
-    events = [event for event, _ in frames]
-
-    assert captured == {"mobile_no": "9920885615", "contract_date": "01-07-2024"}
-    assert events[-1] == "done"
-    tokens = "".join(
-        __import__("json").loads(data)["text"]
-        for event, data in frames
-        if event == "token"
-    )
-    assert tokens == "Your contract note has 3 trades."
-
-
-def test_report_missing_param_is_400(app):
-    session_id = _post_json(
-        app, "/session", {"userId": "u1", "mobileNo": "9", "sessionToken": "jwt.x"}
-    ).json()["session_id"]
+    monkeypatch.setattr(routes, "get_ledger", _fake_get_ledger)
 
     response = _post_json(
         app,
         "/report",
         {
-            "session_id": session_id,
-            "report_type": "cml",
-            "params": {},  # missing client_id
-            "tool_use_id": "tu_cml",
-            "messages": [],
+            "session_id": _new_session(app),
+            "report_type": "ledger",
+            "params": {
+                "group": "MTF",
+                "from_date": "2026-04-01",
+                "to_date": "2026-07-15",
+            },
         },
     )
-    assert response.status_code == 400
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kind"] == "table"
+    assert captured == {"group": "MTF", "from_date": "2026-04-01", "to_date": "2026-07-15"}
+    # Fixed ledger column map.
+    labels = {c["key"]: c["label"] for c in body["columns"]}
+    assert labels["trd_Date"] == "Date" and labels["Narration"] == "Description"
+    assert body["rows"][0]["voucher"] == "OPENING"
+
+
+def test_report_tax_returns_link_payload(app, monkeypatch):
+    url = "https://client-report.choiceindia.com/PDFReports/TaxReport_1_X130627.pdf"
+    monkeypatch.setattr(
+        routes,
+        "get_tax_report",
+        lambda session, fin_year, **kwargs: ReportResult(
+            ok=True, data={"Status": "Success", "Response": url, "Reason": ""}
+        ),
+    )
+
+    response = _post_json(
+        app,
+        "/report",
+        {
+            "session_id": _new_session(app),
+            "report_type": "tax_report",
+            "params": {"fin_year": "2025-2026"},
+        },
+    )
+    body = response.json()
+    assert body["kind"] == "link"
+    assert body["url"] == url
+
+
+def test_report_no_data_returns_empty_payload(app, monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "get_global_pnl",
+        lambda session, group, from_date, to_date, **kwargs: ReportResult(
+            ok=False, error="Data not found."
+        ),
+    )
+
+    response = _post_json(
+        app,
+        "/report",
+        {
+            "session_id": _new_session(app),
+            "report_type": "global_pnl",
+            "params": {"group": "Cash", "from_date": "2026-04-01", "to_date": "2026-07-15"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kind"] == "empty"
+    assert body["message"] == "Data not found."
+
+
+def test_report_upstream_error_returns_error_payload(app, monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "get_ledger",
+        lambda *a, **k: ReportResult(ok=False, error="upstream 500"),
+    )
+
+    response = _post_json(
+        app,
+        "/report",
+        {
+            "session_id": _new_session(app),
+            "report_type": "ledger",
+            "params": {"group": "Group1", "from_date": "2026-04-01", "to_date": "2026-07-15"},
+        },
+    )
+    body = response.json()
+    assert body["kind"] == "error"
+    assert body["message"] == "upstream 500"
+
+
+def test_report_unknown_param_is_422_and_no_finx_call(app, monkeypatch):
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        routes, "get_ledger", lambda *a, **k: calls.append(a) or ReportResult(ok=True)
+    )
+
+    response = _post_json(
+        app,
+        "/report",
+        {
+            "session_id": _new_session(app),
+            "report_type": "ledger",
+            "params": {
+                "group": "Group1",
+                "from_date": "2026-04-01",
+                "to_date": "2026-07-15",
+                "client_id": "X130627",  # not a registry step param
+            },
+        },
+    )
+    assert response.status_code == 422
+    assert calls == []
+
+
+def test_report_missing_param_is_422(app):
+    response = _post_json(
+        app,
+        "/report",
+        {
+            "session_id": _new_session(app),
+            "report_type": "ledger",
+            "params": {"group": "Group1"},  # missing from_date/to_date
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_report_unknown_session_is_404(app):
+    response = _post_json(
+        app,
+        "/report",
+        {
+            "session_id": "nope",
+            "report_type": "tax_report",
+            "params": {"fin_year": "2025-2026"},
+        },
+    )
+    assert response.status_code == 404

@@ -134,7 +134,7 @@ def test_models_are_frozen():
         TokenEvent(text="hello"),
         CitationsEvent(citations=[Citation(topic="t")]),
         UsageEvent(usage=Usage(cumulative_cost_inr=2.0)),
-        ReportRequestEvent(report_type="cml", fields=["client_id"], tool_use_id="tu_1"),
+        ReportRequestEvent(report_type="contract_notes", tool_use_id="tu_1"),
         ReportRequestEvent(
             report_type="ledger",
             steps=[
@@ -164,13 +164,11 @@ def test_usage_frame_carries_cumulative_cost():
     assert dumped["usage"]["cumulative_cost_inr"] == 3.14
 
 
-def test_report_request_defaults_are_additive():
-    """Legacy constructor (no ``steps``) and new constructor both validate."""
-    legacy = ReportRequestEvent(report_type="cml", fields=["client_id"], tool_use_id="tu_1")
-    assert legacy.steps == [] and legacy.fields == ["client_id"]
-
+def test_report_request_steps_default_empty():
+    """``steps`` defaults to ``[]`` and the legacy ``fields`` attribute is gone."""
     modern = ReportRequestEvent(report_type="tax_report", tool_use_id="tu_2")
-    assert modern.steps == [] and modern.fields == []
+    assert modern.steps == []
+    assert not hasattr(modern, "fields")
 
 
 def test_widget_step_deserializes_by_kind():

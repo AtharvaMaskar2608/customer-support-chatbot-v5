@@ -5,11 +5,12 @@ One loop serves two callers: :func:`agent_reply` (non-streaming, for evals) and
 tools (:data:`~backend.agent.tools.TOOLS`), use the same system prompt, disable thinking,
 and loop until the model returns a final answer with no tool calls.
 
-Report tools are intent-only: when the model calls one, the stream emits a
-``report_request`` frame carrying the pending Anthropic ``tool_use_id`` and stops. The
-frontend collects the parameters, calls FinX, and resumes via
-:func:`resume_report_stream`, which appends the ``tool_result`` and continues to a
-compliant summary. RAG-backed answers carry the citations of the last ``rag_search``.
+Report tools are intent-only: when the model calls one, the stream emits a terminal
+``report_request`` frame carrying the tool's widget spec and the pending Anthropic
+``tool_use_id`` (for trace correlation only), then ``usage`` and ``done`` — the turn ends.
+The frontend collects the parameters and runs the report via ``POST /report``, entirely
+outside the model; there is no resume. RAG-backed answers carry the citations of the last
+``rag_search``.
 
 Guardrails live in the system prompt (``backend.agent.prompt``). Both caps are enforced in
 code: total messages are hard-capped (offering a support ticket at the cap), and clarifying
@@ -39,7 +40,7 @@ from backend.agent.tools import (
     dispatch_tool,
     is_clarifying_tool,
     is_report_tool,
-    report_request_fields,
+    report_widget_spec,
 )
 from backend.config.settings import get_settings
 from backend.contracts.events import (
@@ -195,9 +196,10 @@ async def _run_turn(
     Contract: emits ``status`` at tool-use boundaries, ``token`` for the final answer's
     text, a ``citations`` frame when ``rag_search`` was used, a ``usage`` frame aggregating
     the turn's token cost/latency plus running ``cumulative_cost_inr``, then ``done``. On a
-    report tool call it yields a ``report_request`` (with the pending ``tool_use_id``) and
-    returns without a ``usage``/``done`` — the turn awaits widget input. Any failure yields a
-    single ``error`` frame.
+    report tool call it yields a terminal ``report_request`` (with the tool's widget spec
+    and pending ``tool_use_id``) followed by ``usage`` and ``done`` — the report renders as
+    a widget outside the model, so the turn ends (no FinX call, no resume). Any failure
+    yields a single ``error`` frame.
     """
     settings = get_settings()
     system = build_system_prompt()
@@ -239,18 +241,31 @@ async def _run_turn(
             if not tool_uses:
                 break
 
-            # A report tool call pauses the turn for widget input. Handle it before any
-            # other tool so no FinX call is attempted with model-supplied parameters.
+            # A report tool call ends the turn: the report renders as a widget outside the
+            # model. Handle it before any other tool so no FinX call is attempted with
+            # model-supplied parameters, and always close the stream with usage + done so
+            # the frontend can clear its progress indicator (CHO-61).
             report_call = next(
                 (b for b in tool_uses if is_report_tool(b.name)), None
             )
             if report_call is not None:
-                report_type, fields = report_request_fields(report_call.name)
+                spec = report_widget_spec(report_call.name)
                 yield ReportRequestEvent(
-                    report_type=report_type,  # type: ignore[arg-type]
-                    fields=fields,
+                    report_type=spec.report_type,  # type: ignore[arg-type]
+                    steps=list(spec.steps),
                     tool_use_id=report_call.id,
                 )
+                latency_ms = (time.perf_counter() - start) * 1000
+                yield UsageEvent(
+                    usage=build_usage(
+                        settings.anthropic_model,
+                        total_input,
+                        total_output,
+                        latency_ms,
+                        prior_cost_inr,
+                    )
+                )
+                yield DoneEvent(stop_reason="report_request")
                 return
 
             tool_results: list[dict[str, Any]] = []
@@ -313,9 +328,10 @@ async def agent_reply_stream(
 ) -> AsyncIterator[SSEEvent]:
     """Stream one agent turn as ``SSEEvent``s (status -> token -> citations -> usage -> done).
 
-    Contract: registers ``rag_search``/``cml_report``/``contract_note``, disables thinking,
-    and loops call->tools->repeat until a final answer, mapping the run to SSE frames (see
-    :func:`_run_turn`). A report tool call yields a ``report_request`` and pauses. When the
+    Contract: registers ``rag_search`` and the five intent-only report tools, disables
+    thinking, and loops call->tools->repeat until a final answer, mapping the run to SSE
+    frames (see :func:`_run_turn`). A report tool call yields a terminal ``report_request``
+    then ``usage``/``done``. When the
     conversation is already at the ``MAX_MESSAGES`` cap, no model call is made and the
     support-ticket offer is streamed instead. ``prior_cost_inr`` is the conversation's
     cumulative cost before this turn (0 on turn 1); ``messages`` is not mutated for the
@@ -340,55 +356,6 @@ async def agent_reply_stream(
         yield frame
 
 
-async def resume_report_stream(
-    session: Session,
-    messages: list[dict[str, Any]],
-    tool_use_id: str,
-    report_result: Any,
-    *,
-    prior_cost_inr: float = 0.0,
-) -> AsyncIterator[SSEEvent]:
-    """Resume a paused turn by feeding a report's result back and streaming the summary.
-
-    Contract: ``messages`` must end with the assistant turn containing the pending
-    ``tool_use`` block (as left by the ``report_request`` pause). This appends a matching
-    ``tool_result`` for ``tool_use_id`` carrying ``report_result`` (a
-    :class:`~backend.contracts.models.ReportResult` or any JSON-serializable payload) and
-    re-enters the loop, which streams a factual summary (token -> usage -> done). Runs inside
-    a root ``agent`` trace span like :func:`agent_reply_stream`.
-    """
-    tracer = get_tracer()
-    payload = (
-        report_result.model_dump()
-        if hasattr(report_result, "model_dump")
-        else report_result
-    )
-    resumed = list(messages)
-    resumed.append(
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": json.dumps(payload),
-                }
-            ],
-        }
-    )
-
-    @tracer.observe(type="agent", name="resume_report_stream")
-    async def _traced() -> AsyncIterator[SSEEvent]:
-        tracer.update_current_trace(
-            thread_id=session.session_id, user_id=session.user_id
-        )
-        async for frame in _run_turn(session, resumed, prior_cost_inr):
-            yield frame
-
-    async for frame in _traced():
-        yield frame
-
-
 # --------------------------------------------------------------------------------------
 # Non-streaming (evals)
 # --------------------------------------------------------------------------------------
@@ -404,11 +371,14 @@ def agent_reply(
 
     Contract: same loop as the streaming path (same tools, prompt, thinking disabled) but
     returns text + citations + usage instead of frames — the model callback used by evals.
-    Citations are those of the last ``rag_search`` when RAG was used. If a report tool is
-    called there is no widget to collect parameters, so a neutral tool result is fed back
-    (the model is told to direct the user to the report widget rather than fabricate values)
-    and the loop continues to a final answer. At the ``MAX_MESSAGES`` cap it returns the
-    support-ticket offer without calling the model. Runs inside a root ``agent`` span.
+    Citations are those of the last ``rag_search`` when RAG was used. ``tools_called``
+    records every tool name invoked during the turn (``rag_search``, any report tool,
+    ``ask_clarifying_question``) so intent-routing evals can assert the path taken without
+    inferring it from citations. If a report tool is called there is no widget to collect
+    parameters, so a neutral tool result is fed back (the model is told to direct the user
+    to the report widget rather than fabricate values) and the loop continues to a final
+    answer. At the ``MAX_MESSAGES`` cap it returns the support-ticket offer without calling
+    the model. Runs inside a root ``agent`` span.
     """
     tracer = get_tracer()
 
@@ -433,6 +403,7 @@ def agent_reply(
         total_input = 0
         total_output = 0
         last_rag: RagResult | None = None
+        tools_called: list[str] = []
         start = time.perf_counter()
         final_text = ""
 
@@ -462,6 +433,7 @@ def agent_reply(
 
             tool_results: list[dict[str, Any]] = []
             for tool_use in tool_uses:
+                tools_called.append(tool_use.name)
                 if is_report_tool(tool_use.name):
                     content = (
                         "Report parameters are collected from the user via a secure "
@@ -488,6 +460,7 @@ def agent_reply(
             text=final_text,
             citations=_citations_of(last_rag),
             usage=build_usage(model, total_input, total_output, latency_ms, prior_cost_inr),
+            tools_called=tuple(tools_called),
         )
 
     return _traced()

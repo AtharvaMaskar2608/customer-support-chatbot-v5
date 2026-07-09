@@ -2,8 +2,8 @@
 
 ``SSEEvent`` is a discriminated union (on the ``type`` field) of every frame the API
 streams to the frontend. ``usage`` frames carry a running ``cumulative_cost_inr``;
-``report_request`` frames name the report and the fields the frontend widget must
-collect, so the model never supplies report parameter values itself.
+``report_request`` frames name the report and the widget ``steps`` the frontend must
+render to collect parameters, so the model never supplies report parameter values itself.
 """
 
 from typing import Annotated, Literal, Union
@@ -81,11 +81,11 @@ class UsageEvent(BaseModel):
 class ReportRequestEvent(BaseModel):
     """Signals the frontend to collect report parameters via a structured widget.
 
-    The agent only decides *when* a report is relevant; the widget supplies the
-    parameter values, which are fed back via a separate resume call. ``steps`` is the
-    declarative widget spec the frontend chains in order (a card picker, then a date
-    range, etc.). ``fields`` is the legacy flat path, retained defaulted to ``[]`` until
-    ``finx-middleware-tools`` removes it.
+    The agent only decides *when* a report is relevant and which report family; the widget
+    supplies the parameter values, which the frontend submits to ``POST /report`` (the model
+    never sees them). ``steps`` is the declarative widget spec the frontend chains in order
+    (a card picker, then a date range, etc.). ``tool_use_id`` is the pending Anthropic
+    tool-use id, retained for trace correlation only — the turn ends after this frame.
     """
 
     type: Literal["report_request"] = "report_request"
@@ -95,11 +95,8 @@ class ReportRequestEvent(BaseModel):
         "detailed_pnl",
         "contract_notes",
         "tax_report",
-        "cml",  # legacy; removed by finx-middleware-tools
-        "contract_note",  # legacy; removed by finx-middleware-tools
     ]
     steps: list[WidgetStep] = []
-    fields: list[str] = []  # legacy; removed by finx-middleware-tools
     tool_use_id: str
 
 

@@ -19,21 +19,24 @@ def create_session(
     user_id: str,
     mobile_no: str,
     session_token: str,
-    client_code: str | None = None,
+    client_code: str,
+    finx_session_id: str,
 ) -> Session:
     """Create and store a :class:`Session` from trimmed login inputs, returning it.
 
-    Contract: strips leading/trailing whitespace on ``user_id``, ``mobile_no``,
-    ``session_token``, and ``client_code`` (defaulting a missing client code to ""),
-    constructs a ``Session`` whose ``session_id`` doubles as the store key, and retains the
-    ``session_token`` (FinX JWT) for downstream report calls. The returned session's
-    ``session_id`` is what the client passes back on ``/chat`` and ``/report``.
+    Contract: strips leading/trailing whitespace on every input, constructs a ``Session``
+    whose ``session_id`` doubles as the store key, and retains the ``finx_session_id`` (the
+    FinX middleware SessionId) and ``client_code`` used to authorize/identify report calls.
+    ``session_token`` (legacy JWT) is stored but no longer authorizes any report call.
+    Requiredness of ``finx_session_id``/``client_code`` is enforced at the API boundary. The
+    returned ``session_id`` is what the client passes back on ``/chat`` and ``/report``.
     """
     session = Session(
-        client_code=(client_code or "").strip(),
+        client_code=client_code.strip(),
         user_id=user_id.strip(),
         mobile_no=mobile_no.strip(),
         session_token=session_token.strip(),
+        finx_session_id=finx_session_id.strip(),
     )
     _SESSIONS[session.session_id] = session
     return session
