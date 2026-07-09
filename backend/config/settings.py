@@ -42,14 +42,6 @@ class Settings(BaseSettings):
         "https://finx.choiceindia.com", alias="FINX_MIDDLEWARE_BASE_URL"
     )
 
-    # --- Legacy FinX report APIs (CML and Contract Note; removed by finx-middleware-tools) ---
-    finx_cml_base_url: str = Field(
-        "https://finxomne.choiceindia.com", alias="FINX_CML_BASE_URL"
-    )
-    finx_contract_note_base_url: str = Field(
-        "https://finx.choiceindia.com", alias="FINX_CONTRACT_NOTE_BASE_URL"
-    )
-
     # --- Tracing (optional; no-op when unset) ---
     confident_api_key: str | None = Field(None, alias="CONFIDENT_API_KEY")
     tracing_enabled: bool = Field(False, alias="TRACING_ENABLED")

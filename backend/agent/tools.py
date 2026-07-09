@@ -3,22 +3,25 @@
 Exposes the model-visible tool schemas (:data:`TOOLS`) the loop registers with the
 Anthropic Messages API, and dispatch for the tools the loop actually executes inline.
 
-Only ``rag_search`` runs inside the loop. The report tools (``cml_report``,
-``contract_note``) are **intent-only**: a model call to one signals *that* a report is
-wanted, never its parameters. The loop turns such a call into a ``report_request`` SSE
-frame (see :data:`REPORT_TOOLS`), the frontend widget collects the parameters, and the
-FinX call is made outside the loop and fed back via resume — so the model can never
-fabricate ``client_id``/``mobile_no``/``contract_date`` values.
+Only ``rag_search`` runs inside the loop. The five report tools (``ledger``,
+``global_pnl``, ``detailed_pnl``, ``contract_notes``, ``tax_report``) are **intent-only**:
+a model call to one signals *that* a report family is wanted, never its parameters. The
+loop turns such a call into a terminal ``report_request`` SSE frame carrying the tool's
+widget spec (see :data:`REPORT_WIDGETS`); the frontend collects the variant/date values and
+runs the report via ``POST /report`` — entirely outside the model — so the model can never
+fabricate report parameters.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
+from backend.contracts.events import CardOption, CardStep, DateRangeStep, WidgetStep
 from backend.contracts.models import RagResult, Session
 from backend.rag.schemas import RAG_SEARCH_TOOL
 from backend.rag.search import rag_search
-from backend.tools.schemas import CML_REPORT_TOOL, CONTRACT_NOTE_TOOL
+from backend.tools.schemas import REPORT_TOOL_SCHEMAS
 
 # Structural marker for a clarifying question. It is intent-only (no parameters): the model
 # calls it to signal it needs a missing detail, and the loop then prompts it to write the
@@ -39,8 +42,7 @@ ASK_CLARIFYING_QUESTION_TOOL: dict[str, Any] = {
 # The full tool list handed to the Messages API on every turn.
 TOOLS: list[dict[str, Any]] = [
     RAG_SEARCH_TOOL,
-    CML_REPORT_TOOL,
-    CONTRACT_NOTE_TOOL,
+    *REPORT_TOOL_SCHEMAS,
     ASK_CLARIFYING_QUESTION_TOOL,
 ]
 
@@ -60,23 +62,112 @@ def available_tools(allow_clarifying: bool) -> list[dict[str, Any]]:
         return TOOLS
     return [tool for tool in TOOLS if tool is not ASK_CLARIFYING_QUESTION_TOOL]
 
-# Report tool name -> (report_type for the SSE frame, fields the widget must collect).
-# The report_type values match ``ReportRequestEvent.report_type``; the fields mirror the
-# arguments of the corresponding ``backend.tools.finx`` function the resume call invokes.
-REPORT_TOOLS: dict[str, tuple[str, list[str]]] = {
-    "cml_report": ("cml", ["client_id"]),
-    "contract_note": ("contract_note", ["mobile_no", "contract_date"]),
+
+# --------------------------------------------------------------------------------------
+# Report widget registry
+# --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReportWidgetSpec:
+    """A report tool's ``report_type`` and the ordered widget steps its params come from.
+
+    ``steps`` is the declarative widget chain the frontend renders (a card picker, a date
+    range, …); its step params are the *only* accepted source of report parameters — the
+    API validates ``POST /report`` params against exactly these names.
+    """
+
+    report_type: str
+    steps: tuple[WidgetStep, ...]
+
+
+# Report tool name -> its widget spec. The tool name doubles as the ``report_type``.
+# Date-range steps carry no defaults (product decision): the user always picks a range.
+REPORT_WIDGETS: dict[str, ReportWidgetSpec] = {
+    "ledger": ReportWidgetSpec(
+        "ledger",
+        (
+            CardStep(
+                param="group",
+                options=(
+                    CardOption(label="Normal Ledger", value="Group1"),
+                    CardOption(label="MTF Ledger", value="MTF"),
+                ),
+            ),
+            DateRangeStep(),
+        ),
+    ),
+    "global_pnl": ReportWidgetSpec(
+        "global_pnl",
+        (
+            CardStep(
+                param="group",
+                options=(
+                    CardOption(label="Equity", value="Cash"),
+                    CardOption(label="Derivatives", value="Derv"),
+                    CardOption(label="Commodity", value="Comm"),
+                ),
+            ),
+            DateRangeStep(),
+        ),
+    ),
+    "detailed_pnl": ReportWidgetSpec(
+        "detailed_pnl",
+        (
+            CardStep(
+                param="group",
+                options=(
+                    CardOption(label="Standard", value="Group1"),
+                    CardOption(label="Commodity", value="Group23"),
+                ),
+            ),
+            DateRangeStep(),
+        ),
+    ),
+    "contract_notes": ReportWidgetSpec(
+        "contract_notes",
+        (DateRangeStep(),),
+    ),
+    "tax_report": ReportWidgetSpec(
+        "tax_report",
+        (
+            CardStep(
+                param="fin_year",
+                options=(
+                    CardOption(label="2024-2025", value="2024-2025"),
+                    CardOption(label="2025-2026", value="2025-2026"),
+                    CardOption(label="2026-2027", value="2026-2027"),
+                ),
+            ),
+        ),
+    ),
 }
 
 
 def is_report_tool(name: str) -> bool:
-    """Return whether ``name`` is an intent-only report tool (the loop must pause on it)."""
-    return name in REPORT_TOOLS
+    """Return whether ``name`` is an intent-only report tool (the loop pauses on it)."""
+    return name in REPORT_WIDGETS
 
 
-def report_request_fields(name: str) -> tuple[str, list[str]]:
-    """Return ``(report_type, fields)`` for a report tool. Raises ``KeyError`` if unknown."""
-    return REPORT_TOOLS[name]
+def report_widget_spec(name: str) -> ReportWidgetSpec:
+    """Return the :class:`ReportWidgetSpec` for a report tool. Raises ``KeyError`` if unknown."""
+    return REPORT_WIDGETS[name]
+
+
+def report_param_names(report_type: str) -> list[str]:
+    """Return the param names the registry's widget steps collect for ``report_type``.
+
+    These are the only keys ``POST /report`` accepts for that report type — a card step
+    contributes its ``param``; a date-range step contributes its ``from_param``/``to_param``.
+    Raises ``KeyError`` for an unknown report type.
+    """
+    names: list[str] = []
+    for step in REPORT_WIDGETS[report_type].steps:
+        if isinstance(step, CardStep):
+            names.append(step.param)
+        elif isinstance(step, DateRangeStep):
+            names.extend([step.from_param, step.to_param])
+    return names
 
 
 def dispatch_tool(name: str, tool_input: dict[str, Any], session: Session) -> RagResult:

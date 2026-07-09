@@ -20,11 +20,10 @@ from backend.agent.loop import (
     agent_reply_stream,
     clarifying_question_count,
     conversation_message_count,
-    resume_report_stream,
 )
 from backend.agent.tools import ASK_CLARIFYING_QUESTION, available_tools
 from backend.config.settings import get_settings
-from backend.contracts.models import Citation, RagChunk, RagResult, ReportResult, Session
+from backend.contracts.models import Citation, RagChunk, RagResult, Session
 
 
 # --------------------------------------------------------------------------------------
@@ -213,55 +212,64 @@ def test_faq_answer_non_streaming_has_citations_and_usage(monkeypatch):
 
 
 # --------------------------------------------------------------------------------------
-# Report intent pause + resume
+# Report intent is terminal (CHO-61): report_request -> usage -> done
 # --------------------------------------------------------------------------------------
 
 
-def test_report_tool_pauses_with_report_request(monkeypatch):
+def test_report_tool_emits_report_request_then_usage_then_done(monkeypatch):
     script = [
-        {"events": [], "final": _message([_tool_block("tu_cn", "contract_note", {})])},
+        {"events": [], "final": _message([_tool_block("tu_led", "ledger", {})])},
     ]
     _patch_stream(monkeypatch, script)
 
     events = _collect(
-        agent_reply_stream(_SESSION, [{"role": "user", "content": "my contract note"}])
+        agent_reply_stream(_SESSION, [{"role": "user", "content": "my ledger"}])
     )
     types = [e.type for e in events]
 
     report = next(e for e in events if e.type == "report_request")
-    assert report.report_type == "contract_note"
-    assert report.tool_use_id == "tu_cn"
-    assert "contract_date" in report.fields
-    # The turn pauses: no usage/done frame after a report_request.
-    assert "usage" not in types
-    assert "done" not in types
+    assert report.report_type == "ledger"
+    assert report.tool_use_id == "tu_led"
+    # The widget spec carries the group card step (Normal/MTF) then the date-range step.
+    assert report.steps[0].kind == "cards"
+    assert report.steps[0].param == "group"
+    assert {o.value for o in report.steps[0].options} == {"Group1", "MTF"}
+    assert report.steps[1].kind == "date_range"
+    # The turn terminates: report_request is followed by usage then done (CHO-61).
+    assert types.index("report_request") < types.index("usage") < types.index("done")
+    assert types[-1] == "done"
+    done = next(e for e in events if e.type == "done")
+    assert done.stop_reason == "report_request"
 
 
-def test_resume_report_stream_summarises(monkeypatch):
+def test_report_tool_records_intent_in_tools_called_non_streaming(monkeypatch):
+    # The non-streaming eval path feeds a neutral tool result and continues to a final
+    # answer, recording the report tool name in tools_called for intent-routing evals.
     script = [
-        {
-            "events": [_delta("Your contract note "), _delta("has 3 trades.")],
-            "final": _message([_text_block("Your contract note has 3 trades.")]),
-        },
+        _message([_tool_block("tu_pnl", "global_pnl", {})]),
+        _message([_text_block("Use the report widget to view your P&L.")]),
     ]
-    _patch_stream(monkeypatch, script)
+    monkeypatch.setattr(loop, "_sync_client", lambda: _FakeSyncClient(script))
+    monkeypatch.setattr(loop, "build_system_prompt", lambda: "SYSTEM")
 
-    # Messages as left after the pause: user turn + assistant tool_use turn.
-    paused = [
-        {"role": "user", "content": "my contract note"},
-        {
-            "role": "assistant",
-            "content": [{"type": "tool_use", "id": "tu_cn", "name": "contract_note", "input": {}}],
-        },
+    reply = agent_reply(_SESSION, [{"role": "user", "content": "my p&l"}])
+
+    assert reply.tools_called == ("global_pnl",)
+    assert reply.citations == ()
+
+
+def test_rag_intent_recorded_in_tools_called(monkeypatch):
+    script = [
+        _message([_tool_block("tu_1", "rag_search", {"query": "q"})]),
+        _message([_text_block("Go to Profile > Contact.")]),
     ]
-    report_result = ReportResult(ok=True, data={"trades": 3})
-    events = _collect(
-        resume_report_stream(_SESSION, paused, "tu_cn", report_result)
-    )
+    monkeypatch.setattr(loop, "_sync_client", lambda: _FakeSyncClient(script))
+    monkeypatch.setattr(loop, "build_system_prompt", lambda: "SYSTEM")
+    monkeypatch.setattr(loop, "dispatch_tool", lambda name, inp, sess: _RAG_RESULT)
 
-    tokens = "".join(e.text for e in events if e.type == "token")
-    assert tokens == "Your contract note has 3 trades."
-    assert events[-1].type == "done"
+    reply = agent_reply(_SESSION, [{"role": "user", "content": "update mobile?"}])
+
+    assert reply.tools_called == ("rag_search",)
 
 
 # --------------------------------------------------------------------------------------
@@ -421,10 +429,12 @@ def test_system_prompt_has_tools_categories_and_guardrails(monkeypatch):
 
     text = prompt.build_system_prompt()
 
-    # Tools listed.
+    # Tools listed: rag_search + the five report tools.
     assert "rag_search" in text
-    assert "cml_report" in text
-    assert "contract_note" in text
+    for tool in ("ledger", "global_pnl", "detailed_pnl", "contract_notes", "tax_report"):
+        assert tool in text
+    # The prompt states report results render in the UI (not via the assistant).
+    assert "renders directly in the UI" in text
     # In-scope categories derived from qa_chunks.
     assert "Account" in text and "Profile" in text
     assert "Reports" in text and "CML" in text

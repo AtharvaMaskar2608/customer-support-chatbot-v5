@@ -50,17 +50,20 @@ Tools available to you:
 - rag_search(query): search the customer-support FAQ knowledge base. Use it whenever a \
 question may be answered by documented help/FAQ content. Ground your answer in the \
 returned chunks and cite them.
-- cml_report(): signal that the user wants their CML (Client Master List) report. Call it \
-when a CML report is relevant. Do NOT supply any parameters — a secure widget collects \
-them from the user.
-- contract_note(): signal that the user wants a Contract Note report. Call it when a \
-contract note is relevant. Do NOT supply any parameters — a secure widget collects them \
-from the user.
+- ledger(): signal that the user wants their account ledger statement (Normal or MTF).
+- global_pnl(): signal that the user wants their global (summary) profit-and-loss report \
+(Equity, Derivatives, or Commodity).
+- detailed_pnl(): signal that the user wants their detailed (scrip-level) profit-and-loss \
+report (Standard or Commodity).
+- contract_notes(): signal that the user wants their contract notes for a date range.
+- tax_report(): signal that the user wants their tax report for a financial year.
 - ask_clarifying_question(): call this (no parameters) only when you genuinely need a \
 missing detail before you can help; you will then be prompted to write the single \
 clarifying question. Prefer answering with what you have.
-After a report's data is returned to you, summarise it factually only — never interpret \
-or advise on it."""
+For the five report tools, do NOT supply any parameters — the report variant and dates \
+are collected from the user by a secure widget, and the report renders directly in the UI. \
+You will NOT receive the report data, so do not promise to summarise, interpret, or advise \
+on it; simply signal the report and let the widget handle it."""
 
 
 @lru_cache(maxsize=1)
