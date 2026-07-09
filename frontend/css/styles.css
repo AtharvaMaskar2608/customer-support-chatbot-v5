@@ -479,6 +479,167 @@ body {
 }
 .report-widget.done { opacity: 0.6; filter: saturate(0.6); }
 
+/* ---------- Report card-select step ---------- */
+.report-choice-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.report-choice {
+  flex: 1 1 8.5rem;
+  min-height: 44px;
+  padding: 0.85rem 1rem;
+  border-radius: 1rem;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6ebff;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: all 0.28s var(--spring);
+  cursor: pointer;
+}
+.report-choice:hover:not(:disabled) {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(120deg, #3a5ef7, #0891b2);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px -10px rgba(79, 124, 255, 0.6);
+}
+.report-choice:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+.report-choice.selected {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(120deg, #3a5ef7, #0891b2);
+  box-shadow: 0 8px 22px -10px rgba(79, 124, 255, 0.7);
+}
+.report-choice:disabled { cursor: default; }
+
+/* ---------- Report result: table / notice / download ---------- */
+.report-result {
+  border-radius: 1.2rem;
+  padding: 1rem 1.1rem 1.1rem;
+  background: rgba(12, 16, 34, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.report-result-title {
+  font-family: '"Bricolage Grotesque"', 'Inter', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  color: #eef1fb;
+  margin-bottom: 0.7rem;
+}
+.report-table-scroll {
+  border-radius: 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.report-th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #a6aecd;
+  padding: 0.55rem 0.8rem;
+  background: rgba(20, 26, 50, 0.96);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.report-td {
+  padding: 0.5rem 0.8rem;
+  color: #d5dcf5;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.report-td-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.report-table tbody tr:last-child .report-td { border-bottom: none; }
+.report-table tbody tr:nth-child(even) .report-td { background: rgba(255, 255, 255, 0.02); }
+.report-note {
+  margin-top: 0.6rem;
+  font-size: 11.5px;
+  color: #8b93b8;
+}
+
+.report-notice {
+  border-radius: 1.2rem;
+  padding: 0.9rem 1.1rem;
+  background: rgba(12, 16, 34, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.report-notice-error {
+  background: rgba(60, 16, 26, 0.55);
+  border-color: rgba(244, 63, 94, 0.35);
+}
+
+.download-card {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: all 0.28s var(--spring);
+  cursor: pointer;
+  text-decoration: none;
+}
+.download-card:hover {
+  border-color: transparent;
+  background: linear-gradient(120deg, rgba(58, 94, 247, 0.22), rgba(8, 145, 178, 0.22));
+  transform: translateY(-2px);
+  box-shadow: 0 14px 32px -12px rgba(79, 124, 255, 0.5);
+}
+.download-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.85rem;
+  color: #fff;
+  background: linear-gradient(135deg, #4f7cff, #22d3ee);
+  box-shadow: 0 6px 18px -6px rgba(79, 124, 255, 0.6);
+  flex-shrink: 0;
+}
+.download-text { min-width: 0; flex: 1 1 auto; }
+.download-title {
+  display: block;
+  font-family: '"Bricolage Grotesque"', 'Inter', sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  color: #eef1fb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.download-sub {
+  display: block;
+  font-size: 12px;
+  color: #a6aecd;
+  margin-top: 0.1rem;
+}
+.download-cta {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #9cb8ff;
+}
+
 /* ---------- Composer ---------- */
 .composer-fade {
   background: linear-gradient(180deg, rgba(5, 6, 14, 0) 0%, rgba(5, 6, 14, 0.82) 42%, rgba(5, 6, 14, 0.97) 100%);

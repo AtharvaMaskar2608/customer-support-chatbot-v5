@@ -1,15 +1,17 @@
 /* ══════════════════════════════════════════════════════════════════════
    Choice FinX Assist — POC chat frontend
-   Consumes the P5 HTTP/SSE contract:
-     POST /session {userId, mobileNo, sessionToken, clientCode?} -> {session_id}
+   Consumes the HTTP/SSE contract:
+     POST /session {userId, mobileNo, sessionToken, finxSessionId, clientCode}
+                                                                -> {session_id}
      POST /chat    {session_id, messages, prior_cost_inr}        -> SSE
-     POST /report  {session_id, report_type, params, tool_use_id,
-                    messages, prior_cost_inr}                    -> SSE
-   SSE frames (event name = type): status | token | citations | usage |
+     POST /report  {session_id, report_type, params}   -> JSON ReportRenderPayload
+   /chat SSE frames (event name = type): status | token | citations | usage |
    report_request | done | error.
 
-   Report params are ONLY ever collected via the structured widget below —
-   never as free text routed through the model.
+   On a `report_request` frame the frontend chains the frame's declarative
+   `steps` (card-select → date-range) into structured params, POSTs /report, and
+   renders the returned ReportRenderPayload (table | link | empty | error)
+   DIRECTLY — the model never touches report parameters or results.
    ══════════════════════════════════════════════════════════════════════ */
 
 'use strict';
@@ -23,19 +25,20 @@ const API_BASE =
   localStorage.getItem('finx_api_base') ||
   'http://localhost:8000';
 
-// Report tool names as registered with the Anthropic API (backend/agent/tools.py).
-// Needed to synthesize the paused assistant tool_use block for /report resume.
-const REPORT_TOOL_NAMES = { cml: 'cml_report', contract_note: 'contract_note' };
-
-const FIELD_META = {
-  client_id: { label: 'Client ID', type: 'text', placeholder: 'e.g. X001234' },
-  mobile_no: { label: 'Mobile number', type: 'tel', placeholder: '10-digit mobile' },
-  contract_date: { label: 'Contract date', type: 'date', placeholder: '' },
+// Human-readable titles per report_type, for the widget header and the durable
+// history marker. Report parameter values themselves are opaque FinX tokens
+// carried by the steps spec — never named here.
+const REPORT_LABELS = {
+  ledger: 'Ledger',
+  global_pnl: 'Global P&L',
+  detailed_pnl: 'Detailed P&L',
+  contract_notes: 'Contract Notes',
+  tax_report: 'Tax Report',
 };
 
 const SUGGESTIONS = [
-  '📄 Get my CML report',
-  '🧾 Show my contract note',
+  '📊 Show my ledger',
+  '🧾 Get my contract notes',
   '💸 What are the brokerage charges?',
   '🔐 How do I reset my FinX password?',
 ];
@@ -95,12 +98,6 @@ function nearBottom() {
 
 function scrollToEnd(force = false) {
   if (force || nearBottom()) scrollRegion.scrollTo({ top: scrollRegion.scrollHeight });
-}
-
-/** yyyy-mm-dd (native date input) -> DD-MM-YYYY (FinX contract-note format). */
-function toDdMmYyyy(isoDate) {
-  const [y, m, d] = isoDate.split('-');
-  return `${d}-${m}-${y}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,75 +365,140 @@ function updateCostCard(cumulative) {
 }
 
 // ---------------------------------------------------------------------------
-// Report widget (structured params — never free text through the model)
+// Report widgets — chained declarative steps (structured params, never free
+// text through the model). A report_request frame carries `steps`; each step is
+// rendered in order, its choice accumulated into `params`, then POSTed to
+// /report. A "Never mind" on any step cancels the whole chain.
 // ---------------------------------------------------------------------------
 
-const REPORT_TITLES = {
-  cml: { title: 'CML report', blurb: 'Client Master List — straight from FinX.' },
-  contract_note: { title: 'Contract note', blurb: 'Pick the trade date — we fetch the note.' },
-};
+// Resolved by a step when the user taps "Never mind".
+const CANCEL = Symbol('cancel');
 
-function prefillFor(field) {
-  if (field === 'mobile_no') return state.session.mobileNo || '';
-  if (field === 'client_id') return state.session.clientCode || '';
-  return '';
+/** Shared widget-card header (brand tile + title + blurb). */
+function widgetHeaderHtml(title, blurb) {
+  return `
+    <div class="flex items-center gap-2.5 mb-3.5">
+      <div class="brand-tile w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="white" class="w-4 h-4">
+          <path fill-rule="evenodd" d="M4.5 2A1.5 1.5 0 0 0 3 3.5v13A1.5 1.5 0 0 0 4.5 18h11a1.5 1.5 0 0 0 1.5-1.5V7.62a1.5 1.5 0 0 0-.44-1.06l-4.12-4.12A1.5 1.5 0 0 0 11.38 2H4.5Zm2 8.75a.75.75 0 0 1 .75-.75h5.5a.75.75 0 0 1 0 1.5h-5.5a.75.75 0 0 1-.75-.75Zm.75 2.75a.75.75 0 0 0 0 1.5h5.5a.75.75 0 0 0 0-1.5h-5.5Z" clip-rule="evenodd"/>
+        </svg>
+      </div>
+      <div>
+        <p class="font-display font-semibold text-[15px] leading-tight text-slate-100">${escapeHtml(title)}</p>
+        <p class="text-[12px] text-slate-400">${escapeHtml(blurb)}</p>
+      </div>
+    </div>`;
+}
+
+/** The "Never mind" cancel button (present on every step). */
+function widgetCancelHtml() {
+  return `
+    <button type="button" data-cancel
+            class="shrink-0 min-h-[44px] px-4 rounded-xl text-[13px] font-medium text-slate-400
+                   border border-white/10 bg-white/5 hover:text-white hover:bg-white/10
+                   transition-colors disabled:opacity-50">
+      Never mind
+    </button>`;
 }
 
 /**
- * Render the widget for a report_request frame and resolve with the structured
- * params on submit. The widget is the ONLY source of report parameter values.
+ * Chain a report_request frame's `steps` in order, accumulate params, and
+ * resolve the full param object — or `null` if any step is cancelled or an
+ * unknown step kind is hit (forward-compat guard renders an error notice).
  */
-function showReportWidget(reportType, fields) {
+async function renderReportSteps(steps, reportType) {
+  const title = REPORT_LABELS[reportType] || reportType;
+  const params = {};
+  for (const step of steps) {
+    let result;
+    if (step.kind === 'cards') {
+      result = await renderCardStep(step, title);
+    } else if (step.kind === 'date_range') {
+      result = await renderDateRangeStep(step, title);
+    } else {
+      renderNotice('error', title, `This report needs an app update to display (unknown step "${step.kind}").`);
+      return null;
+    }
+    if (result === CANCEL) return null;
+    Object.assign(params, result);
+  }
+  return params;
+}
+
+/** A `cards` step: one tappable card per option; resolves {[param]: value}. */
+function renderCardStep(step, title) {
   return new Promise((resolve) => {
     removeEmptyState();
-    const meta = REPORT_TITLES[reportType] || { title: reportType, blurb: '' };
     const card = document.createElement('div');
     card.className = 'flex justify-start msg-in';
-
-    const fieldRows = fields
-      .map((f) => {
-        const fm = FIELD_META[f] || { label: f, type: 'text', placeholder: '' };
-        const prefill = escapeHtml(prefillFor(f));
-        return `
-          <label class="block">
-            <span class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1">${fm.label}</span>
-            <input data-field="${f}" type="${fm.type}" value="${fm.type === 'date' ? '' : prefill}"
-                   placeholder="${fm.placeholder}" required
-                   class="input-field !py-2.5" />
-          </label>`;
-      })
+    const cardsHtml = (step.options || [])
+      .map((o) => `
+        <button type="button" data-value="${escapeHtml(o.value)}" class="report-choice">
+          ${escapeHtml(o.label)}
+        </button>`)
       .join('');
-
     card.innerHTML = `
       <div class="report-widget max-w-[92%] sm:max-w-[26rem] w-full p-5">
-        <div class="flex items-center gap-2.5 mb-1">
-          <div class="brand-tile w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="white" class="w-4 h-4">
-              <path fill-rule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clip-rule="evenodd"/>
-            </svg>
+        ${widgetHeaderHtml(title, 'Pick an option to continue.')}
+        <div class="report-choice-group">${cardsHtml}</div>
+        <div class="mt-3.5">${widgetCancelHtml()}</div>
+      </div>`;
+
+    messagesEl.appendChild(card);
+    scrollToEnd(true);
+
+    const widget = card.querySelector('.report-widget');
+    const lock = () => {
+      widget.classList.add('done');
+      for (const b of widget.querySelectorAll('button')) b.disabled = true;
+    };
+    for (const btn of widget.querySelectorAll('[data-value]')) {
+      btn.addEventListener('click', () => {
+        lock();
+        btn.classList.add('selected');
+        resolve({ [step.param]: btn.dataset.value });
+      });
+    }
+    widget.querySelector('[data-cancel]').addEventListener('click', () => {
+      lock();
+      resolve(CANCEL);
+    });
+  });
+}
+
+/**
+ * A `date_range` step: two native date inputs (already emit YYYY-MM-DD), no
+ * defaults, submit gated until both are set and from ≤ to. Resolves
+ * {[from_param]: from, [to_param]: to}.
+ */
+function renderDateRangeStep(step, title) {
+  return new Promise((resolve) => {
+    removeEmptyState();
+    const card = document.createElement('div');
+    card.className = 'flex justify-start msg-in';
+    card.innerHTML = `
+      <div class="report-widget max-w-[92%] sm:max-w-[26rem] w-full p-5">
+        ${widgetHeaderHtml(title, 'Choose a date range.')}
+        <form class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block">
+              <span class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1">From</span>
+              <input data-from type="date" required class="input-field !py-2.5" />
+            </label>
+            <label class="block">
+              <span class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1">To</span>
+              <input data-to type="date" required class="input-field !py-2.5" />
+            </label>
           </div>
-          <div>
-            <p class="font-display font-semibold text-[15px] leading-tight text-slate-100">${meta.title}</p>
-            <p class="text-[12px] text-slate-400">${meta.blurb}</p>
-          </div>
-        </div>
-        <p class="text-[12px] text-cyan-200/90 bg-cyan-400/10 border border-cyan-300/15 rounded-lg px-2.5 py-1.5 my-3.5">
-          🔒 These details go straight to FinX — never through the AI.
-        </p>
-        <form class="space-y-3">${fieldRows}
+          <p data-daterr class="hidden text-[12px] text-rose-300">The “from” date must be on or before the “to” date.</p>
           <div class="flex gap-2 pt-0.5">
-            <button type="button" data-cancel
-                    class="shrink-0 min-h-[44px] px-4 rounded-xl text-[13px] font-medium text-slate-400
-                           border border-white/10 bg-white/5 hover:text-white hover:bg-white/10
-                           transition-colors disabled:opacity-50">
-              Never mind
-            </button>
-            <button type="submit"
+            ${widgetCancelHtml()}
+            <button type="submit" data-submit disabled
                     class="btn-press btn-shine flex-1 min-h-[44px] rounded-xl font-display font-semibold text-white text-sm
                            bg-gradient-to-r from-brand-600 to-cyan-500 shadow-glow
                            transition-shadow duration-300 hover:shadow-lift
-                           disabled:opacity-60 disabled:cursor-wait">
-              Get my report →
+                           disabled:opacity-50 disabled:cursor-not-allowed">
+              Continue →
             </button>
           </div>
         </form>
@@ -445,32 +507,195 @@ function showReportWidget(reportType, fields) {
     messagesEl.appendChild(card);
     scrollToEnd(true);
 
-    const form = card.querySelector('form');
-    const lockWidget = () => {
-      for (const el of form.querySelectorAll('input, button')) el.disabled = true;
-      card.querySelector('.report-widget').classList.add('done');
-    };
+    const widget = card.querySelector('.report-widget');
+    const form = widget.querySelector('form');
+    const fromEl = form.querySelector('[data-from]');
+    const toEl = form.querySelector('[data-to]');
+    const errEl = form.querySelector('[data-daterr]');
+    const submitBtn = form.querySelector('[data-submit]');
 
+    // ISO YYYY-MM-DD strings compare correctly with a lexical <=.
+    const validate = () => {
+      const bothSet = Boolean(fromEl.value && toEl.value);
+      const ordered = !bothSet || fromEl.value <= toEl.value;
+      errEl.classList.toggle('hidden', !(bothSet && !ordered));
+      submitBtn.disabled = !(bothSet && ordered);
+    };
+    fromEl.addEventListener('input', validate);
+    toEl.addEventListener('input', validate);
+
+    const lock = () => {
+      widget.classList.add('done');
+      for (const el of form.querySelectorAll('input, button')) el.disabled = true;
+    };
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const params = {};
-      for (const input of form.querySelectorAll('input[data-field]')) {
-        const field = input.dataset.field;
-        const value = input.value.trim();
-        params[field] = input.type === 'date' ? toDdMmYyyy(value) : value;
-      }
-      lockWidget();
-      form.querySelector('button[type="submit"]').textContent = 'Pulling your report…';
-      resolve(params);
+      if (!fromEl.value || !toEl.value || fromEl.value > toEl.value) return;
+      lock();
+      resolve({ [step.from_param]: fromEl.value, [step.to_param]: toEl.value });
     });
-
-    // Skip path: resolves null — the caller never touches /report.
     form.querySelector('[data-cancel]').addEventListener('click', () => {
-      lockWidget();
-      form.querySelector('button[type="submit"]').textContent = 'Report skipped';
-      resolve(null);
+      lock();
+      resolve(CANCEL);
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Report result rendering (ReportRenderPayload → DOM, no model involvement)
+// ---------------------------------------------------------------------------
+
+const MAX_TABLE_ROWS = 200;
+const NUMERIC_RE = /^-?[₹$]?\s?[\d,]+(\.\d+)?%?$/;
+
+/** Append a left-aligned assistant-side card wrapper; returns the inner node. */
+function appendReportCard() {
+  removeEmptyState();
+  const row = document.createElement('div');
+  row.className = 'flex justify-start msg-in';
+  const inner = document.createElement('div');
+  inner.className = 'max-w-[92%] sm:max-w-[80%] w-full';
+  row.appendChild(inner);
+  messagesEl.appendChild(row);
+  scrollToEnd(true);
+  return inner;
+}
+
+/** A transient "fetching…" card shown while POST /report is in flight. */
+function appendLoadingCard(message) {
+  removeEmptyState();
+  const row = document.createElement('div');
+  row.className = 'flex justify-start msg-in';
+  row.innerHTML = `
+    <div class="flex items-center gap-2 pl-1 py-1">
+      <div class="brand-tile w-6 h-6 rounded-lg flex items-center justify-center shrink-0">
+        <span class="text-white text-[11px] font-display font-bold">✦</span>
+      </div>
+      <span class="status-line"></span>
+      <span class="typing-dots"><span></span><span></span><span></span></span>
+    </div>`;
+  row.querySelector('.status-line').textContent = message;
+  messagesEl.appendChild(row);
+  scrollToEnd(true);
+  return row;
+}
+
+function isNumericish(v) {
+  if (typeof v === 'number') return true;
+  if (typeof v !== 'string') return false;
+  const s = v.trim();
+  return s !== '' && NUMERIC_RE.test(s);
+}
+
+/** Render a ReportRenderPayload directly (table | link | empty | error). */
+function renderReportPayload(payload) {
+  const title = payload.title || 'Report';
+  switch (payload.kind) {
+    case 'table':
+      renderTable(payload, title);
+      break;
+    case 'link':
+      renderLink(payload, title);
+      break;
+    case 'empty':
+      renderNotice('empty', title, payload.message || 'No data for this report.');
+      break;
+    case 'error':
+      renderNotice('error', title, payload.message || 'This report could not be generated.');
+      break;
+    default:
+      renderNotice('error', title, `Unsupported report result (kind "${payload.kind}").`);
+  }
+}
+
+/** Horizontally scrollable table with numeric right-align and a row cap. */
+function renderTable(payload, title) {
+  const inner = appendReportCard();
+  const columns = payload.columns || [];
+  const allRows = payload.rows || [];
+  const rows = allRows.slice(0, MAX_TABLE_ROWS);
+
+  const head = columns
+    .map((c) => `<th class="report-th">${escapeHtml(c.label)}</th>`)
+    .join('');
+
+  const body = rows
+    .map((r) => {
+      const cells = columns
+        .map((c) => {
+          const raw = r[c.key];
+          const val = raw == null ? '' : String(raw);
+          const cls = isNumericish(raw) ? 'report-td report-td-num' : 'report-td';
+          return `<td class="${cls}">${escapeHtml(val)}</td>`;
+        })
+        .join('');
+      return `<tr>${cells}</tr>`;
+    })
+    .join('');
+
+  const capped = allRows.length > rows.length
+    ? `<p class="report-note">Showing ${rows.length} of ${allRows.length} rows.</p>`
+    : '';
+
+  inner.innerHTML = `
+    <div class="report-result">
+      <p class="report-result-title">${escapeHtml(title)}</p>
+      <div class="overflow-x-auto report-table-scroll">
+        <table class="report-table">
+          <thead><tr>${head}</tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+      ${capped}
+    </div>`;
+  scrollToEnd(true);
+}
+
+/**
+ * Download card for a `link` payload. The URL is unauthenticated/sensitive: it
+ * rides ONLY in the anchor href (built via DOM, opened in a new tab with
+ * rel="noopener"), never copied into chat text or durable history.
+ */
+function renderLink(payload, title) {
+  const inner = appendReportCard();
+  const wrap = document.createElement('div');
+  wrap.className = 'report-result';
+
+  const a = document.createElement('a');
+  a.href = payload.url || '#';
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.className = 'download-card';
+  a.innerHTML = `
+    <span class="download-icon" aria-hidden="true">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5">
+        <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.19L6.28 8.22a.75.75 0 0 0-1.06 1.06l3.75 3.75a.75.75 0 0 0 1.06 0l3.75-3.75a.75.75 0 1 0-1.06-1.06l-2.97 2.72V2.75Z"/>
+        <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z"/>
+      </svg>
+    </span>
+    <span class="download-text">
+      <span class="download-title"></span>
+      <span class="download-sub"></span>
+    </span>
+    <span class="download-cta">Open →</span>`;
+  a.querySelector('.download-title').textContent = title;
+  a.querySelector('.download-sub').textContent = payload.message || 'Opens the report in a new tab';
+
+  wrap.appendChild(a);
+  inner.appendChild(wrap);
+  scrollToEnd(true);
+}
+
+/** Informational notice for empty/error payloads (and the unknown-kind guard). */
+function renderNotice(kind, title, message) {
+  const inner = appendReportCard();
+  const isErr = kind === 'error';
+  inner.innerHTML = `
+    <div class="report-notice ${isErr ? 'report-notice-error' : ''}">
+      <p class="report-result-title">${escapeHtml(title)}</p>
+      <p class="text-[13px] text-slate-300 mt-0.5">${escapeHtml(message)}</p>
+    </div>`;
+  scrollToEnd(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -488,13 +713,18 @@ function setBusy(busy) {
 }
 
 /**
- * Consume one SSE stream into an assistant bubble.
- * Resolves {pause: {toolUseId, reportType, fields} | null, text, errored}.
+ * Consume one /chat SSE stream into an assistant bubble. Resolves
+ * {report, text, errored, dropped}:
+ *   report  — {reportType, steps} if a report_request frame arrived, else null
+ *   errored — an `error` frame arrived, OR the stream closed with no terminal
+ *             frame at all (a dropped connection is treated as a failed turn)
+ *   dropped — the stream closed without done/error/report_request
  */
 function consumeStream(path, body, bubble) {
   return new Promise((resolve, reject) => {
-    let pause = null;
+    let report = null;
     let errored = false;
+    let sawDone = false;
     streamSSE(path, body, (event, data) => {
       switch (event) {
         case 'status':
@@ -513,17 +743,39 @@ function consumeStream(path, body, bubble) {
           updateCostCard(state.cumulativeCost);
           break;
         case 'report_request':
-          pause = { toolUseId: data.tool_use_id, reportType: data.report_type, fields: data.fields };
+          report = { reportType: data.report_type, steps: data.steps || [] };
           break;
         case 'done':
+          sawDone = true;
           break;
         case 'error':
           errored = true;
           bubble.fail(data.message || 'Something went wrong.');
           break;
       }
-    }).then(() => resolve({ pause, text: bubble.text, errored }), reject);
+    }).then(() => {
+      const dropped = !sawDone && !report && !errored;
+      resolve({ report, text: bubble.text, errored: errored || dropped, dropped });
+    }, reject);
   });
+}
+
+/**
+ * CHO-61 — the single stream-teardown site for a /chat stream. Whatever the
+ * terminal condition (done, error, a report_request turn end, an exception, or
+ * the stream closing with no terminal frame), this always stops the "Generating
+ * answer…" affordances so no path can leave the indicator spinning.
+ */
+function finalizeMessage(bubble, outcome) {
+  if (outcome.failMessage) {          // exception path — render the failure now
+    bubble.fail(outcome.failMessage);
+  } else if (outcome.dropped) {       // stream closed with no terminal frame
+    bubble.fail('The connection closed unexpectedly — please try again.');
+  } else if (outcome.errored) {       // error frame already rendered via fail()
+    bubble.settle();
+  } else {                            // done, or a report_request turn end
+    bubble.finish();
+  }
 }
 
 async function sendMessage(rawText) {
@@ -537,8 +789,9 @@ async function sendMessage(rawText) {
   state.messages.push({ role: 'user', content: text });
 
   const bubble = addAssistantMessage();
+  let outcome;
   try {
-    const outcome = await consumeStream(
+    outcome = await consumeStream(
       '/chat',
       {
         session_id: state.session.id,
@@ -547,87 +800,75 @@ async function sendMessage(rawText) {
       },
       bubble,
     );
-
-    if (outcome.pause) {
-      await handleReportPause(outcome, bubble);
-    } else {
-      bubble.finish();
-      if (!outcome.errored) {
-        state.messages.push({ role: 'assistant', content: outcome.text });
-      } else {
-        state.messages.pop(); // failed turn: drop the user msg so history stays clean
-        bubble.attachRetry(text);
-      }
-    }
   } catch (err) {
-    bubble.fail(err.message || 'Network error — is the backend running?');
-    state.messages.pop();
-    bubble.attachRetry(text);
+    outcome = { report: null, text: bubble.text, errored: true, dropped: false,
+                failMessage: err.message || 'Network error — is the backend running?' };
+  }
+
+  // Terminal handling happens here and only here (CHO-61).
+  finalizeMessage(bubble, outcome);
+
+  try {
+    if (outcome.report) {
+      // The turn ends at the report_request; any preamble text the model
+      // streamed becomes a durable assistant turn, then the widget chain runs.
+      if (outcome.text) state.messages.push({ role: 'assistant', content: outcome.text });
+      await runReportFlow(outcome.report);
+    } else if (outcome.errored) {
+      state.messages.pop(); // failed turn: drop the user msg so history stays clean
+      bubble.attachRetry(text);
+    } else {
+      state.messages.push({ role: 'assistant', content: outcome.text });
+    }
   } finally {
     setBusy(false);
   }
 }
 
 /**
- * Bridge a report_request pause: synthesize the paused assistant tool_use
- * message (the loop requires messages to END with it), collect params via the
- * widget, POST /report, and stream the summary into a fresh bubble.
- *
- * Durable history keeps only plain text turns — the tool_use/tool_result
- * exchange lives solely in the /report call's message snapshot.
+ * Drive a report_request to completion: chain its widget steps into structured
+ * params, POST /report, and render the returned ReportRenderPayload directly —
+ * no model round-trip. Durable history gains only a plain-text `[<title>
+ * displayed]` marker (never raw report data or the sensitive URL).
  */
-async function handleReportPause(outcome, pauseBubble) {
-  const { toolUseId, reportType, fields } = outcome.pause;
-  pauseBubble.finish();
+async function runReportFlow(report) {
+  const { reportType, steps } = report;
+  const title = REPORT_LABELS[reportType] || reportType;
 
-  const assistantContent = [];
-  if (outcome.text) assistantContent.push({ type: 'text', text: outcome.text });
-  assistantContent.push({
-    type: 'tool_use',
-    id: toolUseId,
-    name: REPORT_TOOL_NAMES[reportType],
-    input: {},
-  });
-  const resumeMessages = [...state.messages, { role: 'assistant', content: assistantContent }];
+  const params = await renderReportSteps(steps, reportType);
+  if (params === null) return; // cancelled — nothing posted
 
-  const params = await showReportWidget(reportType, fields);
-
-  // User skipped the report: nothing is sent to /report. Keep durable history
-  // valid — push the pause text (if any) as a plain assistant turn; otherwise
-  // leave history as-is (consecutive user turns are valid for the API).
-  if (!params) {
-    if (outcome.text) state.messages.push({ role: 'assistant', content: outcome.text });
-    return;
-  }
-
-  const bubble = addAssistantMessage();
-  bubble.setStatus('Fetching your report from FinX…');
+  const loader = appendLoadingCard('Fetching your report from FinX…');
   try {
-    const resumed = await consumeStream(
-      '/report',
-      {
-        session_id: state.session.id,
-        report_type: reportType,
-        params,
-        tool_use_id: toolUseId,
-        messages: resumeMessages,
-        prior_cost_inr: state.cumulativeCost,
-      },
-      bubble,
-    );
-    bubble.finish();
-    if (!resumed.errored) {
-      const full = [outcome.text, resumed.text].filter(Boolean).join('\n\n');
-      state.messages.push({ role: 'assistant', content: full || '(report delivered)' });
-    } else {
-      const dropped = state.messages.pop();
-      bubble.attachRetry(typeof dropped.content === 'string' ? dropped.content : '');
+    const res = await fetch(`${API_BASE}/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: state.session.id, report_type: reportType, params }),
+    });
+    if (!res.ok) {
+      let detail = `${res.status}`;
+      try {
+        const err = await res.json();
+        if (err.detail) detail = `${res.status} — ${JSON.stringify(err.detail)}`;
+      } catch (_) { /* non-JSON error body */ }
+      throw new Error(`report request failed (${detail})`);
     }
+    const payload = await res.json();
+    loader.remove();
+    renderReportPayload(payload);
+    state.messages.push({ role: 'assistant', content: historyMarker(payload, title) });
   } catch (err) {
-    bubble.fail(err.message || 'Report request failed.');
-    const dropped = state.messages.pop();
-    bubble.attachRetry(typeof dropped.content === 'string' ? dropped.content : '');
+    loader.remove();
+    renderNotice('error', title, err.message || 'Report request failed.');
   }
+}
+
+/** Plain-text durable-history marker for a rendered report — never raw data/URL. */
+function historyMarker(payload, fallbackTitle) {
+  const title = payload.title || fallbackTitle;
+  if (payload.kind === 'empty') return `[${title}: no data]`;
+  if (payload.kind === 'error') return `[${title}: unavailable]`;
+  return `[${title} displayed]`;
 }
 
 // ---------------------------------------------------------------------------
@@ -640,11 +881,21 @@ $('login-form').addEventListener('submit', async (e) => {
   const errEl = $('login-error');
   errEl.classList.add('hidden');
 
-  // spec: trim ALL inputs before POST /session
+  // spec: trim ALL five inputs before POST /session
   const mobileNo = $('login-phone').value.trim();
   const userId = $('login-userid').value.trim();
   const sessionToken = $('login-token').value.trim();
+  const finxSessionId = $('login-finx').value.trim();
   const clientCode = $('login-clientcode').value.trim();
+
+  // Inline required-field validation — FinX Session ID and client code are the
+  // two new mandatory identity fields; block submission and send nothing if any
+  // required value is empty (mirrors the server's non-empty checks).
+  if (!mobileNo || !userId || !sessionToken || !finxSessionId || !clientCode) {
+    errEl.textContent = 'All fields are required — including FinX Session ID and client code.';
+    errEl.classList.remove('hidden');
+    return;
+  }
 
   btn.disabled = true;
   btn.textContent = 'Warming up…';
@@ -656,13 +907,14 @@ $('login-form').addEventListener('submit', async (e) => {
         userId,
         mobileNo,
         sessionToken,
-        ...(clientCode ? { clientCode } : {}),
+        finxSessionId,
+        clientCode,
       }),
     });
     if (!res.ok) throw new Error(`login failed (${res.status})`);
     const data = await res.json();
 
-    state.session = { id: data.session_id, userId, mobileNo, clientCode };
+    state.session = { id: data.session_id, userId, mobileNo, clientCode, finxSessionId };
     state.messages = [];
     state.cumulativeCost = 0;
     state.turns = 0;

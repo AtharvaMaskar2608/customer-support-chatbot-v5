@@ -64,10 +64,13 @@
                  class="input-field" />
         </div>
         <div>
-          <label for="login-clientcode" class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1.5">
-            Client code <span class="normal-case tracking-normal font-normal text-slate-400">(optional — prefills report widgets)</span>
-          </label>
-          <input id="login-clientcode" type="text" placeholder="e.g. X001234" class="input-field" />
+          <label for="login-finx" class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1.5">FinX Session ID</label>
+          <input id="login-finx" type="password" required placeholder="Paste your FinX SessionId"
+                 class="input-field" />
+        </div>
+        <div>
+          <label for="login-clientcode" class="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 mb-1.5">Client code</label>
+          <input id="login-clientcode" type="text" required placeholder="e.g. X001234" class="input-field" />
         </div>
 
         <p id="login-error" class="hidden text-sm text-rose-300 bg-rose-500/10 border border-rose-400/25 rounded-xl px-3.5 py-2.5"></p>
