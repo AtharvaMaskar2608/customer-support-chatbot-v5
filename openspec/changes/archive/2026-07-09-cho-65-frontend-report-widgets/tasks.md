@@ -33,4 +33,4 @@
 
 - [x] 5.1 Stub `/report` responses (table/link/empty/error) and walk: login (5 fields, required validation) → ledger cards → dates → table; tax → year cards → link card; cancel path
 - [x] 5.2 CHO-61 checks: normal answer, report turn, and forced stream drop all clear the indicator
-- [ ] 5.3 After finx-middleware-tools lands: joint end-to-end pass against the real backend; Tailwind rebuild committed
+- [x] 5.3 After finx-middleware-tools lands: joint end-to-end pass against the real backend; Tailwind rebuild committed

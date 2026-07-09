@@ -49,3 +49,4 @@
 ## 7. Follow-up flag (not blocking)
 
 - [ ] 7.1 Re-capture the MTF ledger request with the MTF tab active and confirm `Group:"MTF"` against the live API; correct the registry value if it differs
+      _Deferred (non-blocking) at archive on 2026-07-09 — requires a live FinX capture. Carried forward as a follow-up; the `Group:"MTF"` registry value remains as-implemented until confirmed._
