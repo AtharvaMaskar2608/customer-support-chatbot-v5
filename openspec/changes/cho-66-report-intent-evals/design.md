@@ -2,7 +2,7 @@
 
 ## Context
 
-`backend/evals/chatbot/` already runs DeepEval `ConversationalGolden`s through `model_callback` → `agent_reply`, scored by six conversational metrics on Confident AI (per `docs/chatbot_eval/{1,2,3}_*.md`). Two forces reshape it: the tool surface changed (five intent-only report tools, report turns end at `report_request`), and the user's agentic eval scenarios are the full Choice Jini workbook — **Phase 1 (A–E, 36 KB cases)** and **Phase 2 (F–M, 46 RAG+API cases)**.
+`backend/evals/chatbot/` already runs DeepEval `ConversationalGolden`s through `model_callback` → `agent_reply`, scored by six conversational metrics on Confident AI (per `docs/chatbot_eval/{1,2,3}_*.md`). Two forces reshape it: the tool surface changed (five intent-only report tools, report turns end at `report_request`), and the user's agentic eval scenarios are the full Choice Jini workbook — **Phase 1 (A–E, 41 KB cases)** and **Phase 2 (F–M, 47 RAG+API cases)** — 88 rows total.
 
 Critically, the current `callback.py` documents its own blind spot: it infers `rag_search` from citations and "Report/clarifying tool calls are not distinguishable from `AgentReply`." That makes Phase 2 category F (intent routing: transactional vs explanation) impossible to assert today. The fix is `AgentReply.tools_called` (A adds, B populates), which this change consumes.
 

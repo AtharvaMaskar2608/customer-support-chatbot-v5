@@ -1,9 +1,11 @@
 """Simulate multi-turn conversations against the agent and score them with DeepEval.
 
 ``ConversationSimulator`` role-plays a user (see :func:`backend.evals.chatbot.callback.model_callback`)
-against the real agent for each :data:`~backend.evals.chatbot.goldens.GOLDENS` conversation,
-producing ``ConversationalTestCase``s. ``evaluate`` then scores every conversation across the
-four target dimensions:
+against the real agent for each :data:`~backend.evals.chatbot.goldens.GOLDENS` conversation —
+the Choice Jini Phase 1 (A–E) and Phase 2 in-scope (F/J/K2/M) cases plus guardrail probes —
+producing ``ConversationalTestCase``s. Subset a run by golden tag (``phase1``, ``phase2``,
+``intent_routing``, ``multiturn``, ``guardrail``) via :func:`run_evaluation`'s ``tags`` or the
+CLI. ``evaluate`` then scores every conversation across the four target dimensions:
 
 - **context retention** — ``KnowledgeRetentionMetric``
 - **goal completion** — ``ConversationCompletenessMetric``
@@ -34,7 +36,12 @@ import pytest
 
 from backend.config.settings import get_settings
 from backend.evals.chatbot.callback import model_callback
-from backend.evals.chatbot.goldens import CHATBOT_ROLE, GOLDENS, RELEVANT_TOPICS
+from backend.evals.chatbot.goldens import (
+    CHATBOT_ROLE,
+    GOLDENS,
+    RELEVANT_TOPICS,
+    goldens_for_tags,
+)
 from backend.evals.rag.generate_goldens import judge_model
 
 if TYPE_CHECKING:
@@ -132,12 +139,16 @@ def conversation_metrics(threshold: float = _METRIC_THRESHOLD) -> list[BaseMetri
 
 def simulate_conversations(
     max_user_simulations: int = DEFAULT_MAX_USER_SIMULATIONS,
+    tags: tuple[str, ...] = (),
 ) -> list[ConversationalTestCase]:
-    """Simulate every golden against the real agent and stamp the ``chatbot_role`` on each case.
+    """Simulate the selected goldens against the real agent and stamp ``chatbot_role`` on each.
 
-    Contract: runs ``ConversationSimulator(model_callback=model_callback,
-    simulator_model=_JUDGE_MODEL).simulate(conversational_goldens=GOLDENS,
-    max_user_simulations=...)`` and sets ``chatbot_role=CHATBOT_ROLE`` on each returned
+    Contract: selects the goldens via ``goldens_for_tags(*tags)`` (all of :data:`GOLDENS` when
+    ``tags`` is empty; otherwise the subset whose metadata tags include every given tag — e.g.
+    ``("phase1",)`` or ``("intent_routing",)``), runs
+    ``ConversationSimulator(model_callback=model_callback,
+    simulator_model=_JUDGE_MODEL).simulate(conversational_goldens=<subset>,
+    max_user_simulations=...)``, and sets ``chatbot_role=CHATBOT_ROLE`` on each returned
     ``ConversationalTestCase`` (required by ``RoleAdherenceMetric``). Live: drives the agent
     and the simulated-user LLM.
     """
@@ -148,7 +159,7 @@ def simulate_conversations(
         simulator_model=_JUDGE_MODEL,
     )
     test_cases = simulator.simulate(
-        conversational_goldens=GOLDENS,
+        conversational_goldens=goldens_for_tags(*tags),
         max_user_simulations=max_user_simulations,
     )
     for test_case in test_cases:
@@ -156,17 +167,21 @@ def simulate_conversations(
     return test_cases
 
 
-def run_evaluation(max_user_simulations: int = DEFAULT_MAX_USER_SIMULATIONS):
-    """Simulate the goldens and score them; returns DeepEval's evaluation result.
+def run_evaluation(
+    max_user_simulations: int = DEFAULT_MAX_USER_SIMULATIONS,
+    tags: tuple[str, ...] = (),
+):
+    """Simulate the selected goldens and score them; returns DeepEval's evaluation result.
 
-    Contract: builds the test cases via :func:`simulate_conversations`, then calls
-    ``evaluate(test_cases, metrics=conversation_metrics(), hyperparameters=hyperparameters())``.
-    Metrics are report-only (LLM-judged over simulated dialogue), so this never asserts on
-    scores — it produces per-metric scores for the report / Confident AI.
+    Contract: builds the test cases via :func:`simulate_conversations` (optionally filtered by
+    ``tags``), then calls ``evaluate(test_cases, metrics=conversation_metrics(),
+    hyperparameters=hyperparameters())``. Metrics are report-only (LLM-judged over simulated
+    dialogue), so this never asserts on scores — it produces per-metric scores for the report
+    / Confident AI.
     """
     from deepeval import evaluate
 
-    test_cases = simulate_conversations(max_user_simulations)
+    test_cases = simulate_conversations(max_user_simulations, tags)
     return evaluate(
         test_cases=test_cases,
         metrics=conversation_metrics(),
@@ -187,8 +202,14 @@ def test_multiturn_conversation_eval() -> None:
 
 
 def main() -> None:
-    """CLI entry point: simulate the goldens and print the per-metric evaluation summary."""
-    run_evaluation()
+    """CLI entry point: simulate the goldens and print the per-metric evaluation summary.
+
+    Any command-line arguments are treated as golden tags to subset the run, e.g.
+    ``python -m backend.evals.chatbot.test_chatbot phase1`` runs only the Phase 1 goldens.
+    """
+    import sys
+
+    run_evaluation(tags=tuple(sys.argv[1:]))
 
 
 if __name__ == "__main__":
