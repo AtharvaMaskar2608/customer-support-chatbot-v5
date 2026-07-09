@@ -2,7 +2,7 @@
 
 ## Why
 
-The agent's tool surface changes completely (five intent-only report tools, results bypassing the LLM), and the user's authoritative agentic eval scenarios are the **Choice Jini RAG test cases** (`docs/Choice_Jini_RAG_TestCases_Phase1_Phase2.xlsx`): **Phase 1** (`Phase1_KB_Bot`, categories A–E, 36 cases — RAG only) and **Phase 2** (`Phase2_TopN_Bot`, categories F–M, 46 cases — RAG + report/API agentic flows). This change turns **both phases** into the DeepEval-style agentic eval suite already scaffolded under `backend/evals/chatbot/` (the `ConversationSimulator` + `model_callback` + metric stack from `docs/chatbot_eval/`), and adds deterministic intent-routing assertions the current harness cannot express. Implements Linear **CHO-60**.
+The agent's tool surface changes completely (five intent-only report tools, results bypassing the LLM), and the user's authoritative agentic eval scenarios are the **Choice Jini RAG test cases** (`docs/Choice_Jini_RAG_TestCases_Phase1_Phase2.xlsx`): **Phase 1** (`Phase1_KB_Bot`, categories A–E, 41 cases — RAG only) and **Phase 2** (`Phase2_TopN_Bot`, categories F–M, 47 cases — RAG + report/API agentic flows). This change turns **both phases** into the DeepEval-style agentic eval suite already scaffolded under `backend/evals/chatbot/` (the `ConversationSimulator` + `model_callback` + metric stack from `docs/chatbot_eval/`), and adds deterministic intent-routing assertions the current harness cannot express. Implements Linear **CHO-60**.
 
 ## What Changes
 
@@ -30,4 +30,4 @@ _None._
 - **Depends on:** `finx-middleware-tools` (B) merged — evals assert the new tool names, terminal report turn, and read `AgentReply.tools_called`. Transitively depends on A.
 - **`callback.py` fix:** today it can only infer `rag_search` from citations and explicitly cannot see report/clarifying tool calls; it will read `AgentReply.tools_called` instead, which is what makes category-F intent routing evaluable.
 - **Linear:** implements CHO-60 (both phases).
-- **Done condition:** `uv run pytest backend/evals/chatbot/test_intent_routing.py` passes (deterministic); the full DeepEval simulation runs over Phase 1 + Phase 2 conversational goldens and reports to Confident AI with Test IDs/categories grouped; `jini_cases.json` accounts for all 82 workbook cases by scope tag.
+- **Done condition:** `uv run pytest backend/evals/chatbot/test_intent_routing.py` passes (deterministic); the full DeepEval simulation runs over Phase 1 + Phase 2 conversational goldens and reports to Confident AI with Test IDs/categories grouped; `jini_cases.json` accounts for all 88 workbook cases by scope tag (52 conversational / 7 intent_routing / 12 endpoint / 17 out_of_scope).

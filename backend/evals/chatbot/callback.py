@@ -16,9 +16,11 @@ Reflecting the reply onto ``Turn``:
   (``topic``/``section``/``question``) for the last ``rag_search``, not raw chunk bodies, so
   each citation is rendered to a compact string. This keeps the multi-turn RAG metrics usable
   if they are added later; the metrics wired in :mod:`.test_chatbot` do not read it.
-- ``tools_called`` — a single ``rag_search`` ``ToolCall`` is inferred when the turn carried
-  citations. Report/clarifying tool calls are not distinguishable from ``AgentReply`` (report
-  tools are intent-only and never execute in ``agent_reply``), so they are not reported.
+- ``tools_called`` — one ``ToolCall`` per name in ``AgentReply.tools_called``, the tools the
+  turn actually invoked (``rag_search``, any report tool, ``ask_clarifying_question``). This
+  is read directly from the reply rather than inferred from citations, so report-intent and
+  clarifying turns — which carry no citations — are represented faithfully. This is what makes
+  the simulator's ``tools_called`` usable for category-F intent routing.
 
 Follows ``docs/chatbot_eval/3_multi_turn_simulation.md`` (§ "Returning Rich Turns").
 """
@@ -73,17 +75,32 @@ def _retrieval_context(reply: AgentReply) -> list[str] | None:
     return [_citation_text(citation) for citation in reply.citations]
 
 
+# Human-readable descriptions for the tools a turn can invoke, attached to each ``ToolCall``
+# so Confident AI renders a meaningful label. Unknown names fall back to an empty description.
+_TOOL_DESCRIPTIONS = {
+    "rag_search": "Search the Choice FinX customer-support knowledge base.",
+    "ledger": "Signal intent for the account ledger report (intent-only).",
+    "global_pnl": "Signal intent for the global P&L report (intent-only).",
+    "detailed_pnl": "Signal intent for the detailed P&L report (intent-only).",
+    "contract_notes": "Signal intent for the contract notes report (intent-only).",
+    "tax_report": "Signal intent for the tax report (intent-only).",
+    "ask_clarifying_question": "Ask the user one clarifying question for a missing detail.",
+}
+
+
 def _tools_called(reply: AgentReply) -> list[Any] | None:
-    """Infer the turn's ``rag_search`` tool call from the presence of citations."""
-    if not reply.citations:
+    """One ``ToolCall`` per name the turn actually invoked (from ``AgentReply.tools_called``).
+
+    Returns ``None`` when the turn called no tools, so a plain conversational turn carries no
+    tool calls. Preserves order and repetition as recorded on the reply.
+    """
+    if not reply.tools_called:
         return None
     from deepeval.test_case import ToolCall
 
     return [
-        ToolCall(
-            name="rag_search",
-            description="Search the Choice FinX customer-support knowledge base.",
-        )
+        ToolCall(name=name, description=_TOOL_DESCRIPTIONS.get(name, ""))
+        for name in reply.tools_called
     ]
 
 
