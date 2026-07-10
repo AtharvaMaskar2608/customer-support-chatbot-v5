@@ -5,7 +5,8 @@
 **Prerequisite:** `finx-middleware-tools` (B) merged — asserts new tool names + terminal report turn and reads `AgentReply.tools_called`.
 
 > **Actual coverage:** the workbook holds **88** data rows (Phase 1 A–E = 41; Phase 2 F–M = 47), not the ~82 estimated in the proposal. The converter counts them dynamically, so the catalog totals 88 by scope: `conversational` 52, `intent_routing` 7, `endpoint` 12, `out_of_scope` 17.
-> **Live-run note:** the deterministic suite and the DeepEval simulation both drive the real agent (`build_system_prompt` reads `qa_chunks`, so they need `DATABASE_URL` reachable + `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`). Everything else was verified offline; **4.2** (full simulation + Confident AI grouping) and the live pass of **3.x** must be run in a DB-enabled environment.
+> **Live-run note:** the deterministic suite and the DeepEval simulation both drive the real agent (`build_system_prompt` reads `qa_chunks`, so they need `DATABASE_URL` reachable + `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`).
+> **Live run completed 2026-07-10 (DB tunnel up, quota restored):** deterministic gate `test_intent_routing.py` **12 passed** (after the routing relaxation noted on 3.1/3.3); full simulation **passed** (`1 passed in 376s`), 59/61 goldens simulated + scored and uploaded to Confident AI grouped by Test ID/category across both phases. **Follow-up (non-blocking):** goldens **C6** and **C7** (adversarial "Hallucination & Safety" probes) are skipped-and-logged — the simulator model declines to generate their opening user turn; soften their phrasing to restore simulated coverage.
 
 ## 1. Workbook → traceable catalog
 
@@ -22,16 +23,16 @@
 
 ## 3. Deterministic intent-routing suite
 
-- [x] 3.1 `test_intent_routing.py`: drive `agent_reply` and assert `tools_called` — transactional→report tool (not rag_search), explanation→rag_search (no report tool), ambiguous/low-confidence→ask_clarifying_question (no report tool)
+- [x] 3.1 `test_intent_routing.py`: drive `agent_reply` and assert `tools_called` — transactional→report tool (not rag_search), explanation→rag_search (no report tool), ambiguous/low-confidence→ask_clarifying_question (no report tool). *Relaxed 2026-07-10 to match the shipped CHO-64 prompt ("prefer answering over asking"): ambiguous cases now assert only the safety property (**no** report tool fires + **no** fabricated params), and `rag_search` is required only for Choice-FinX-specific KB terms ("contract note"), not generic finance definitions ("P&L"). The core guarantee — never guess a report on vague input — is unchanged.*
 - [x] 3.2 No-parameter-hallucination sweep (numeric-date, financial-year, client/account-code regex) on report-intent replies. *Group-token literals (`MTF|Cash|Derv|…`) were intentionally dropped from the gate — they are legitimate widget option names the agent may mention, so matching them false-positives; the sweep targets fabricated **values** (dates/FY/codes) instead.*
-- [x] 3.3 Make these gate (real pass/fail), distinct from the report-only LLM-judged simulation (separate module; asserts, not report-only). *Offline: collection + pure helpers verified; live pass pending a DB-enabled env.*
+- [x] 3.3 Make these gate (real pass/fail), distinct from the report-only LLM-judged simulation (separate module; asserts, not report-only). *Live pass confirmed 2026-07-10: `test_intent_routing.py` 12 passed against the real agent (DB + API).*
 
 ## 4. Runner + reporting
 
-- [x] 4.1 `test_chatbot.py`: registers both phases (via the expanded `GOLDENS`); keeps the six metrics report-only; exposes tag filters for subset runs (`run_evaluation(tags=…)` + CLI args)
-- [ ] 4.2 Full run; verify Confident AI grouping shows Test IDs/categories for both phases; record pass/fail + coverage summary in the change *(needs live DB + API — not runnable in this sandbox)*
+- [x] 4.1 `test_chatbot.py`: registers both phases (via the expanded `GOLDENS`); keeps the six metrics report-only; exposes tag filters for subset runs (`run_evaluation(tags=…)` + CLI args). *Hardened 2026-07-10: `simulate_conversations` now simulates each golden in isolation across a thread pool (`_simulate_one`, `_SIMULATION_WORKERS=8`) so one golden whose opening user turn the simulator can't generate (empty `turns` → DeepEval `TypeError`) is skipped-and-logged instead of sinking the whole `asyncio.gather` batch.*
+- [x] 4.2 Full run; verify Confident AI grouping shows Test IDs/categories for both phases; record pass/fail + coverage summary in the change. *Done 2026-07-10: `1 passed in 376s`; 59/61 goldens simulated + scored (6 metrics) and uploaded to Confident AI grouped by Test ID/category (both phases confirmed on the dashboard). C6/C7 skipped-and-logged (see Live-run note). Catalog coverage: 88 cases (conversational 52, intent_routing 7, endpoint 12, out_of_scope 17).*
 - [x] 4.3 Delete the duplicate `docs/Choice_Jini_RAG_TestCases_Phase1_Phase2 (1).xlsx` (byte-identical to the kept copy — confirmed via `cmp`)
-- [ ] 4.4 Update Linear CHO-60 with results and mark done *(pending 4.2 live results)*
+- [x] 4.4 Update Linear CHO-60 with results and mark done *(done 2026-07-10: results comment posted; CHO-60 moved to Done)*
 
 ## 5. Cross-change coverage note (endpoint cases)
 

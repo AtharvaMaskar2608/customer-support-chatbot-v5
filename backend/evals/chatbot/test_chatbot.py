@@ -29,6 +29,7 @@ agent), ``OPENAI_API_KEY`` + ``DATABASE_URL`` (retrieval + the ``gpt-4o`` judge/
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import deepeval
@@ -45,6 +46,7 @@ from backend.evals.chatbot.goldens import (
 from backend.evals.rag.generate_goldens import judge_model
 
 if TYPE_CHECKING:
+    from deepeval.dataset import ConversationalGolden
     from deepeval.metrics import BaseMetric
     from deepeval.test_case import ConversationalTestCase
 
@@ -52,6 +54,14 @@ if TYPE_CHECKING:
 # conversation may run. Kept modest so the simulation + agent + judge calls stay affordable.
 _METRIC_THRESHOLD = 0.7
 DEFAULT_MAX_USER_SIMULATIONS = 5
+
+# Concurrency for the isolated per-golden simulation (see :func:`simulate_conversations`).
+# Each golden simulates in its own worker thread with its own ``ConversationSimulator``, so
+# one golden's failure can't sink the others while parallelism is preserved. Kept modest to
+# stay within Anthropic/OpenAI rate limits.
+_SIMULATION_WORKERS = 8
+
+logger = logging.getLogger(__name__)
 
 # Judge + simulated-user model. Reuses the RAG eval's single-sourced helper so every eval
 # runs on the same project-enabled model (``gpt-4o`` unless ``DEEPEVAL_JUDGE_MODEL`` is set).
@@ -137,6 +147,36 @@ def conversation_metrics(threshold: float = _METRIC_THRESHOLD) -> list[BaseMetri
     ]
 
 
+def _simulate_one(
+    golden: ConversationalGolden, max_user_simulations: int
+) -> list[ConversationalTestCase]:
+    """Simulate a single golden in isolation; return its test case(s), or ``[]`` on failure.
+
+    Each call builds its own ``ConversationSimulator`` (so concurrent goldens don't race on the
+    simulator's mutable state) and swallows any simulation error — DeepEval raises ``TypeError``
+    when the simulator model fails to produce the opening user turn (empty ``turns``), and one
+    such golden must never sink the rest of the run. Failures/empties are logged and skipped.
+    """
+    from deepeval.simulator import ConversationSimulator
+
+    label = golden.name or (golden.scenario or "")[:60]
+    simulator = ConversationSimulator(
+        model_callback=model_callback,
+        simulator_model=_JUDGE_MODEL,
+    )
+    try:
+        produced = simulator.simulate(
+            conversational_goldens=[golden],
+            max_user_simulations=max_user_simulations,
+        )
+    except Exception as exc:  # noqa: BLE001 - one golden must never sink the whole run
+        logger.warning("skipping golden %s: simulation failed: %s", label, exc)
+        return []
+    if not produced:
+        logger.warning("skipping golden %s: simulation produced no conversation", label)
+    return produced
+
+
 def simulate_conversations(
     max_user_simulations: int = DEFAULT_MAX_USER_SIMULATIONS,
     tags: tuple[str, ...] = (),
@@ -145,25 +185,37 @@ def simulate_conversations(
 
     Contract: selects the goldens via ``goldens_for_tags(*tags)`` (all of :data:`GOLDENS` when
     ``tags`` is empty; otherwise the subset whose metadata tags include every given tag — e.g.
-    ``("phase1",)`` or ``("intent_routing",)``), runs
-    ``ConversationSimulator(model_callback=model_callback,
-    simulator_model=_JUDGE_MODEL).simulate(conversational_goldens=<subset>,
-    max_user_simulations=...)``, and sets ``chatbot_role=CHATBOT_ROLE`` on each returned
-    ``ConversationalTestCase`` (required by ``RoleAdherenceMetric``). Live: drives the agent
-    and the simulated-user LLM.
-    """
-    from deepeval.simulator import ConversationSimulator
+    ``("phase1",)`` or ``("intent_routing",)``) and simulates each golden **in isolation** —
+    one ``ConversationSimulator(...).simulate([golden], ...)`` per golden (see
+    :func:`_simulate_one`) — running up to :data:`_SIMULATION_WORKERS` goldens concurrently in
+    a thread pool. Sets ``chatbot_role=CHATBOT_ROLE`` on each returned ``ConversationalTestCase``
+    (required by ``RoleAdherenceMetric``). Live: drives the agent and the simulated-user LLM.
 
-    simulator = ConversationSimulator(
-        model_callback=model_callback,
-        simulator_model=_JUDGE_MODEL,
-    )
-    test_cases = simulator.simulate(
-        conversational_goldens=goldens_for_tags(*tags),
-        max_user_simulations=max_user_simulations,
-    )
+    Isolation rationale: DeepEval simulates a whole batch under one ``asyncio.gather`` with no
+    ``return_exceptions``, so a single golden whose *opening user turn* the simulator model
+    fails to generate (empty ``turns`` → ``TypeError``) sinks the entire run. Per-golden calls
+    let us skip-and-log that golden and complete the rest; the thread pool keeps cross-golden
+    parallelism (each golden's turns still run concurrently inside its own call).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    goldens = goldens_for_tags(*tags)
+    workers = max(1, min(_SIMULATION_WORKERS, len(goldens)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        produced_lists = list(
+            pool.map(lambda g: _simulate_one(g, max_user_simulations), goldens)
+        )
+    test_cases: list[ConversationalTestCase] = [tc for lst in produced_lists for tc in lst]
+    skipped = [
+        (g.name or "?") for g, lst in zip(goldens, produced_lists) if not lst
+    ]
     for test_case in test_cases:
         test_case.chatbot_role = CHATBOT_ROLE
+    if skipped:
+        logger.warning(
+            "simulated %d/%d goldens; skipped %d (%s)",
+            len(test_cases), len(goldens), len(skipped), ", ".join(skipped),
+        )
     return test_cases
 
 
