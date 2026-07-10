@@ -49,10 +49,21 @@ class Settings(BaseSettings):
     # --- CORS (POC frontend origins; comma-separated, "*" allows any) ---
     cors_origins: str = Field("*", alias="CORS_ORIGINS")
 
+    # --- API path prefix (mount every route + docs under e.g. "/api" when the app sits
+    # behind a path-based reverse proxy that does NOT strip the prefix). Empty = serve at
+    # root (local dev, tests, direct-IP). ---
+    api_prefix: str = Field("", alias="API_PREFIX")
+
     @property
     def cors_origin_list(self) -> list[str]:
         """Parse ``cors_origins`` into a list of allowed origins ("*" -> ["*"])."""
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def normalized_api_prefix(self) -> str:
+        """``api_prefix`` as "" or "/segment" (leading slash, no trailing slash)."""
+        trimmed = self.api_prefix.strip().strip("/")
+        return f"/{trimmed}" if trimmed else ""
 
 
 @lru_cache

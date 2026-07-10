@@ -1,0 +1,26 @@
+# Applies to the backend build (context = repo root).
+# --- secrets & local env: NEVER bake these into an image ---
+.env
+.env.*
+!.env.example
+
+# --- python / uv / test artifacts ---
+.venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.deepeval/
+
+# --- tooling, docs, specs not needed at runtime ---
+.git/
+.gitignore
+.claude/
+.gstack/
+openspec/
+docs/
+README.md
+CLAUDE.md
+*.log
+
+# the backend image is built separately from the frontend
+frontend/

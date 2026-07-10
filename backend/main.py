@@ -27,9 +27,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    """Build and configure the FastAPI app (CORS + routes + tracing lifespan)."""
+    """Build and configure the FastAPI app (CORS + routes + tracing lifespan).
+
+    Every route and the docs endpoints are mounted under ``settings.api_prefix`` (e.g.
+    ``/api``) when set, so the app can sit behind a path-based reverse proxy that forwards
+    ``/api/*`` without stripping the prefix. Empty prefix (the default) serves at root.
+    """
     settings = get_settings()
-    app = FastAPI(title="Customer Support Chatbot API", lifespan=lifespan)
+    prefix = settings.normalized_api_prefix
+    app = FastAPI(
+        title="Customer Support Chatbot API",
+        lifespan=lifespan,
+        docs_url=f"{prefix}/docs",
+        redoc_url=f"{prefix}/redoc",
+        openapi_url=f"{prefix}/openapi.json",
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
@@ -37,7 +49,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.include_router(router)
+    app.include_router(router, prefix=prefix)
     return app
 
 

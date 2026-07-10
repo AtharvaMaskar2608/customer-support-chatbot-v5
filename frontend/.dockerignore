@@ -1,0 +1,5 @@
+# Applies to the frontend build (context = frontend/).
+Dockerfile
+.dockerignore
+tailwind.config.js
+*.log

@@ -22,6 +22,7 @@
 
 const API_BASE =
   new URLSearchParams(location.search).get('api') ||
+  window.__API_BASE__ ||
   localStorage.getItem('finx_api_base') ||
   'http://localhost:8000';
 
